@@ -1,3 +1,6 @@
 [submodule "third_party/LIBERO"]
 	path = third_party/LIBERO
 	url = https://github.com/Lifelong-Robot-Learning/LIBERO
+[submodule "third_party/BAGEL"]
+	path = third_party/BAGEL
+	url = https://github.com/VLARLKit/BAGEL.git
