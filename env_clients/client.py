@@ -7,6 +7,7 @@ Usage:
         --host 0.0.0.0 --port 5550 \
         --rank 0 --world_size 2
 """
+from __future__ import annotations
 
 import argparse
 import importlib
