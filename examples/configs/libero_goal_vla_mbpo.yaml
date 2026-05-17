@@ -114,9 +114,9 @@ training:
 
 runner:
   seed: 0
-  max_epochs: 300
-  eval_interval: 10
-  save_interval: 10
+  max_epochs: 50
+  eval_interval: 5
+  save_interval: 5
   resume_from: null
   is_debug: False
   logger:
