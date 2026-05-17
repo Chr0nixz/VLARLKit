@@ -20,7 +20,7 @@ An elegant and researcher-friendly RL library for Vision-Language-Action (VLA) m
 
 | Category | Supported |
 |---|---|
-| **RL Algorithms** | [PPO](https://arxiv.org/abs/1707.06347) (on-policy), [DSRL](https://arxiv.org/pdf/2506.15799) (off-policy), [RLT](https://www.pi.website/download/rlt.pdf) (off-policy), [VLA-MBPO](https://rhx11111.github.io/VLA-MBPO/) |
+| **RL Algorithms** | [PPO](https://arxiv.org/abs/1707.06347) (on-policy), [DSRL](https://arxiv.org/pdf/2506.15799) (off-policy), [RLT](https://www.pi.website/download/rlt.pdf) (off-policy), [VLA-MBPO](https://rhx11111.github.io/VLA-MBPO/) (model-based RL) |
 | **Base Models** | [π₀.₅](https://github.com/Physical-Intelligence/openpi) |
 | **Benchmarks** | [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), [ManiSkill](https://github.com/haosulab/ManiSkill)|
 
