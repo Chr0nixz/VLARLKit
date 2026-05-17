@@ -120,16 +120,17 @@ class EnvServer:
             return {"error": str(e)}
 
 
-def create_envs(cfg, rank: int, world_size: int) -> dict:
-    """Create train and eval environment instances from config."""
+def create_envs(cfg, rank: int, world_size: int, modes: list[str] | None = None) -> dict:
+    """Create requested environment instances from config."""
     envs = {}
-    env_type = cfg.env.train.get("env_type", "libero")
-    EnvClass = import_env_class(env_type)
+    modes = modes or ["train", "eval"]
 
-    for mode in ("train", "eval"):
+    for mode in modes:
         env_cfg = cfg.env.get(mode)
         if env_cfg is None:
             continue
+        env_type = env_cfg.get("env_type", "libero")
+        EnvClass = import_env_class(env_type)
         total_num_envs = int(env_cfg.get("total_num_envs"))
         num_envs = total_num_envs // world_size
         assert num_envs > 0, (
@@ -149,6 +150,13 @@ def main():
     parser.add_argument("--port", type=int, default=5550, help="Port to bind (default: 5550)")
     parser.add_argument("--rank", type=int, default=0, help="Rank of this env client")
     parser.add_argument("--world_size", type=int, default=1, help="Total number of ranks")
+    parser.add_argument(
+        "--modes",
+        nargs="+",
+        default=["train", "eval"],
+        choices=["train", "eval"],
+        help="Environment modes to create in this server.",
+    )
     args = parser.parse_args()
 
     config_path = os.path.abspath(args.config)
@@ -160,7 +168,7 @@ def main():
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
     signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
 
-    envs = create_envs(cfg, rank=args.rank, world_size=args.world_size)
+    envs = create_envs(cfg, rank=args.rank, world_size=args.world_size, modes=args.modes)
     server = EnvServer(host=args.host, port=args.port, envs=envs)
     server.serve_forever()
 

@@ -827,6 +827,35 @@ class BagelWM:
         return self._predict_success_rewards(images, task_list, **inference_hyper)
 
     @torch.no_grad()
+    def step(
+        self,
+        observations: dict[str, Any],
+        actions: Any,
+        image_key: str = "main_images",
+        wrist_image_key: str = "wrist_images",
+        edit_kwargs: dict[str, Any] | None = None,
+        und_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
+        edit_kwargs = edit_kwargs or {}
+        und_kwargs = und_kwargs or {}
+
+        next_observations = self.get_observations(
+            observations=observations,
+            actions=actions,
+            image_key=image_key,
+            wrist_image_key=wrist_image_key,
+            **edit_kwargs,
+        )
+        rewards = self.get_rewards(
+            observations=next_observations,
+            image_key=image_key,
+            **und_kwargs,
+        )
+        rewards = np.asarray(rewards, dtype=np.float32).reshape(-1)
+        terminations = rewards > 0.0
+        return next_observations, rewards, terminations
+
+    @torch.no_grad()
     def _predict_success_rewards(
         self,
         images: np.ndarray,

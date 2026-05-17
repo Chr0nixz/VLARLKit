@@ -1,0 +1,124 @@
+defaults:
+  - envs/libero_goal@env.eval
+  - models/pi05_for_rl@model
+  - _self_
+
+hydra:
+  run:
+    dir: outputs/${runner.logger.experiment_name}/${now:%Y-%m-%d_%H-%M}
+
+algorithm:
+  normalize_advantages: True
+  group_size: 1
+  eval_rollout_epochs: 25
+
+  branch_rollout_epochs: 4
+  branch_sample_size: 128
+  branch_max_episode_steps: 20
+  branch_dataset_root: "/home/mila/s/sunyi/scratch/VLA_MBRL/libero_goal_data"
+  branch_train_repo_id: "libero_goal_chunk_with_wrist"
+  branch_eval_repo_id: "libero_goal_first_step"
+
+  update_epochs: 10
+  global_mini_batch_size: 512
+  micro_batch_size: 128
+  adv_type: gae
+  loss_type: actor_critic
+  entropy_bonus: 0
+  clip_ratio_high: 0.1
+  clip_ratio_low: 0.1
+  clip_ratio_c: 3.0
+  value_clip: 0.1
+  huber_delta: 10.0
+
+  gamma: 0.99
+  gae_lambda: 0.95
+
+world_model:
+  host: "localhost"
+  base_port: 8002
+  load_model_path: "/home/mila/s/sunyi/scratch/Bagel-WM/Bagel-libero-goal"
+  edit_kwargs:
+    cfg_text_scale: 4.0
+    cfg_img_scale: 2.0
+    cfg_type: parallel
+    cfg_interval: [0.4, 1.0]
+    cfg_renorm_min: 0.0
+    cfg_renorm_type: text_channel
+    timestep_shift: 3.0
+    num_timesteps: 50
+    enable_taylorseer: True
+    save_images: False
+    save_dir: "./generated_images"
+    save_prefix: generated
+  und_kwargs:
+    max_length: 1000
+    do_sample: False
+    temperature: 0.3
+
+env:
+  env_client_host: "localhost"
+  env_client_base_port: 5550
+  eval:
+    seed: ${runner.seed}
+    total_num_envs: 20
+    max_episode_steps: 320
+    group_size: 1
+    is_eval: True
+    use_ordered_reset_state_ids: True
+
+model:
+  model_path: "/network/scratch/s/sunyi/rlinf_sft_models/RLinf-Pi05-LIBERO-SFT"
+  num_action_chunks: 10
+  action_dim: 7
+  use_proprio: True
+  num_steps: 3
+  add_value_head: True
+
+  openpi:
+    config_name: "pi05_libero"
+    num_images_in_input: 2
+    value_after_vlm: True
+    noise_level: 0.5
+    action_horizon: 10
+
+  data:
+    name: "libero"
+    repo_id: "physical-intelligence/libero"
+    prompt_from_task: True
+    assets_dir: "/network/scratch/s/sunyi/rlinf_sft_models/RLinf-Pi05-LIBERO-SFT"
+    extra_delta_transform: False
+
+training:
+  optim:
+    lr: 5.0e-6
+    value_lr: 1.0e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 0.01
+    clip_grad: 1.0
+    critic_warmup_steps: 0
+    lr_scheduler: "constant"
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "no_shard"
+    gradient_checkpointing: False
+    forward_prefetch: False
+    backward_prefetch: null
+    mixed_precision:
+      param_dtype: ${model.precision}
+      reduce_dtype: ${model.precision}
+      buffer_dtype: ${model.precision}
+
+runner:
+  seed: 0
+  max_epochs: 300
+  eval_interval: 10
+  save_interval: 10
+  resume_from: null
+  is_debug: False
+  logger:
+    project: "VLARLKit"
+    experiment_name: "libero_goal_vla_mbpo"

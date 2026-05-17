@@ -1,0 +1,118 @@
+import random
+
+import numpy as np
+import torch
+import torch.distributed as dist
+
+import wandb
+import hydra
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig, OmegaConf
+
+from vlarlkit.data.io_struct import RolloutResult
+from vlarlkit.utils.checkpoint import load_checkpoint
+from vlarlkit.utils.fsdp_utils import sync_fsdp_to_model
+from vlarlkit.utils.remote_env import RemoteEnv
+from vlarlkit.utils.remote_wm import RemoteWM
+from vlarlkit.models.openpi import get_model
+from vlarlkit.policies import PPOPolicy
+from vlarlkit.rollouts import BranchRollout, Rollout
+from vlarlkit.runners import OnPolicyRunner
+
+
+def get_eval_env(cfg: DictConfig, rank: int):
+    host = cfg.env.get("env_client_host", "localhost")
+    base_port = int(cfg.env.get("env_client_base_port", 5550))
+    port = base_port + rank
+    return RemoteEnv(host=host, port=port, env_mode="eval")
+
+
+def get_world_model(cfg: DictConfig, rank: int):
+    wm_cfg = cfg.world_model
+    host = wm_cfg.get("host", "localhost")
+    base_port = int(wm_cfg.get("base_port", 8002))
+    port = base_port + rank
+    return RemoteWM(
+        host=host,
+        port=port,
+        recv_timeout_ms=900_000,
+        max_retries=1,
+    )
+
+
+@hydra.main(
+    config_path="configs",
+    config_name="libero_goal_vla_mbpo",
+    version_base=None,
+)
+def main(cfg: DictConfig) -> None:
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+    rank = dist.get_rank()
+    output_dir = HydraConfig.get().runtime.output_dir
+
+    torch.cuda.set_device(rank)
+
+    seed = int(cfg.runner.seed)
+    random.seed(seed + rank)
+    np.random.seed(seed + rank)
+    torch.manual_seed(seed + rank)
+    torch.cuda.manual_seed_all(seed + rank)
+
+    model = get_model(cfg.model)
+    policy = PPOPolicy(cfg, model, rank)
+
+    world_model = get_world_model(cfg, rank)
+    eval_env = get_eval_env(cfg, rank)
+
+    actor_model = get_model(cfg.model)
+    actor_model.to(f"cuda:{rank}")
+    train_rollout_result = RolloutResult()
+    train_rollout_worker = BranchRollout(
+        cfg,
+        world_model,
+        actor_model,
+        train_rollout_result,
+        mode="train",
+    )
+    eval_rollout_worker = Rollout(cfg, eval_env, actor_model, mode="eval")
+
+    resume_from = cfg.runner.get("resume_from", None)
+    start_epoch = 1
+    wandb_run_id = None
+    if resume_from:
+        ckpt_meta = load_checkpoint(resume_from, policy, rank=rank)
+        if ckpt_meta:
+            start_epoch = ckpt_meta["epoch"] + 1
+            wandb_run_id = ckpt_meta.get("wandb_run_id")
+            sync_fsdp_to_model(policy.get_model(), actor_model)
+
+    if not cfg.runner.is_debug and rank == 0:
+        logger_cfg = cfg.runner.get("logger", {})
+        wandb_kwargs = dict(
+            project=logger_cfg.get("project", "VLARLKit"),
+            name=logger_cfg.get("experiment_name", "default"),
+            config=OmegaConf.to_container(cfg, resolve=True),
+            dir=output_dir,
+        )
+        if wandb_run_id:
+            wandb_kwargs["id"] = wandb_run_id
+            wandb_kwargs["resume"] = "must"
+        wandb.init(**wandb_kwargs)
+        metric_logger = wandb
+    else:
+        metric_logger = None
+
+    runner = OnPolicyRunner(
+        cfg=cfg,
+        policy=policy,
+        train_rollout_worker=train_rollout_worker,
+        eval_rollout_worker=eval_rollout_worker,
+        metric_logger=metric_logger,
+        output_dir=output_dir,
+    )
+    runner.run(start_epoch=start_epoch)
+
+
+if __name__ == "__main__":
+    main()

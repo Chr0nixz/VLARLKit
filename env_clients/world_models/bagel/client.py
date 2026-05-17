@@ -25,7 +25,7 @@ _logger = logging.getLogger(__name__)
 class BagelWMServer:
     """ZMQ REP server that hosts one BAGEL world model instance."""
 
-    _CALLABLE_METHODS = frozenset({"get_observations", "get_rewards", "close"})
+    _CALLABLE_METHODS = frozenset({"get_observations", "get_rewards", "step", "close"})
 
     def __init__(self, host: str, port: int, world_model: BagelWM):
         self._world_model = world_model

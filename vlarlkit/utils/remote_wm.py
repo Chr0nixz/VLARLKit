@@ -130,6 +130,30 @@ class RemoteWM:
             **kwargs,
         )
 
+    def step(
+        self,
+        observations: dict,
+        actions,
+        image_key: str = "main_images",
+        wrist_image_key: str = "wrist_images",
+        edit_kwargs: Optional[dict[str, Any]] = None,
+        und_kwargs: Optional[dict[str, Any]] = None,
+    ) -> tuple[dict, np.ndarray, np.ndarray]:
+        next_obs, rewards, terminations = self._call(
+            "step",
+            observations=observations,
+            actions=actions,
+            image_key=image_key,
+            wrist_image_key=wrist_image_key,
+            edit_kwargs=edit_kwargs,
+            und_kwargs=und_kwargs,
+        )
+        return (
+            self._prepare_observations(next_obs),
+            np.asarray(rewards, dtype=np.float32),
+            np.asarray(terminations, dtype=bool),
+        )
+
     def close(self):
         if self._closed:
             return

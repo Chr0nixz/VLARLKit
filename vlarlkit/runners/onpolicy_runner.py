@@ -52,8 +52,11 @@ class OnPolicyRunner:
         gamma = float(self.cfg.algorithm.gamma)
         gae_lambda = float(self.cfg.algorithm.gae_lambda)
         normalize_advantages = self.cfg.algorithm.get("normalize_advantages", True)
-        train_env_cfg = self.cfg.env.train
-        max_steps = int(train_env_cfg.max_episode_steps)
+        max_steps = int(
+            self.cfg.algorithm.branch_max_episode_steps
+            if "branch_max_episode_steps" in self.cfg.algorithm
+            else self.cfg.env.train.max_episode_steps
+        )
         num_action_chunks = int(self.cfg.model.num_action_chunks)
         episode_len = max_steps // num_action_chunks
         assert max_steps % num_action_chunks == 0, (
@@ -70,7 +73,12 @@ class OnPolicyRunner:
             rollout_start_time = time.time()
             rr = self.train_rollout_worker.rollout_result
             self.train_rollout_worker.init_rollout()
-            rollout_infos = self.train_rollout_worker.run_rollout(self.cfg.algorithm.rollout_epochs)
+            rollout_epochs = (
+                self.cfg.algorithm.branch_rollout_epochs
+                if "branch_rollout_epochs" in self.cfg.algorithm
+                else self.cfg.algorithm.rollout_epochs
+            )
+            rollout_infos = self.train_rollout_worker.run_rollout(rollout_epochs)
             rollout_end_time = time.time()
 
             rollout_stats = allreduce_mean_std({
