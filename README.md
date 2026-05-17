@@ -20,7 +20,7 @@ An elegant and researcher-friendly RL library for Vision-Language-Action (VLA) m
 
 | Category | Supported |
 |---|---|
-| **RL Algorithms** | [PPO](https://arxiv.org/abs/1707.06347) (on-policy), [DSRL](https://arxiv.org/pdf/2506.15799) (off-policy), [RLT](https://www.pi.website/download/rlt.pdf) (off-policy) |
+| **RL Algorithms** | [PPO](https://arxiv.org/abs/1707.06347) (on-policy), [DSRL](https://arxiv.org/pdf/2506.15799) (off-policy), [RLT](https://www.pi.website/download/rlt.pdf) (off-policy), [VLA-MBPO](https://rhx11111.github.io/VLA-MBPO/) |
 | **Base Models** | [π₀.₅](https://github.com/Physical-Intelligence/openpi) |
 | **Benchmarks** | [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), [ManiSkill](https://github.com/haosulab/ManiSkill)|
 
@@ -80,13 +80,16 @@ Now, you can lanuch the script to run!
 bash examples/run_onpolicy_rl.sh
 ```
 
+If you want to have a try with our MBRL method (VLA-MBPO), please follow [BAGEL-WM](https://github.com/VLARLKit/BAGEL/tree/main) to setup envs and artifacts.
+
 ## 📋 TODO
 
 - [x] Add ManiSkill benchmark support
+- [ ] Add RoboTwin benchmark support
 - [ ] Add GRPO algorithm support
 - [x] Add off-policy asynchronous training support
 - [ ] Add OpenVLA base model support
-- [ ] Add offline and model-based VLA methods support
+- [x] Add offline and model-based VLA methods support
 
 ## 🙏 Acknowledgements
 We borrow some good designs from [RLinf](https://github.com/RLinf/RLinf). The model integration and environment module implementations are primarily adapted from RLinf. We thank the RLinf team for their foundational work.
