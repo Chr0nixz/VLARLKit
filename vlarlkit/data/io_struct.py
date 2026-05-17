@@ -160,8 +160,17 @@ class RolloutResult:
         Returns:
             A dict with flat keys and flattened torch tensors, each (N, ...).
         """
-        def _stack_and_flatten(arrays: list[np.ndarray]) -> torch.Tensor:
-            t = torch.from_numpy(np.stack(arrays))       # (T, n_envs, ...)
+        def _stack_and_flatten(name: str, arrays: list[np.ndarray]) -> torch.Tensor:
+            try:
+                stacked = np.stack(arrays)               # (T, n_envs, ...)
+            except ValueError as exc:
+                shapes = [np.shape(array) for array in arrays]
+                unique_shapes = list(dict.fromkeys(shapes))
+                raise ValueError(
+                    f"Cannot stack rollout field '{name}' because shapes differ over time: "
+                    f"{unique_shapes}"
+                ) from exc
+            t = torch.from_numpy(stacked)
             return t.reshape(t.shape[0] * t.shape[1], *t.shape[2:])  # (N, ...)
 
         batch: dict[str, Any] = {}
@@ -174,13 +183,13 @@ class RolloutResult:
             for k in data_list[0].keys():
                 vals = [d[k] for d in data_list]
                 if isinstance(vals[0], np.ndarray):
-                    batch[f"{prefix}/{k}"] = _stack_and_flatten(vals)
+                    batch[f"{prefix}/{k}"] = _stack_and_flatten(f"{prefix}/{k}", vals)
 
         for name in ("actions", "rewards", "terminations", "truncations",
                       "prev_logprobs", "prev_values"):
             data_list = getattr(self, name)
             if data_list:
-                batch[name] = _stack_and_flatten(data_list)
+                batch[name] = _stack_and_flatten(name, data_list)
 
         if self.forward_inputs:
             # forward_inputs may have T+1 entries (extra for last next_obs);
@@ -188,14 +197,17 @@ class RolloutResult:
             fi_list = self.forward_inputs[:len(self.obs)] if len(self.forward_inputs) > len(self.obs) else self.forward_inputs
             keys = fi_list[0].keys()
             batch["forward_inputs"] = {
-                k: _stack_and_flatten([d[k] for d in fi_list])
+                k: _stack_and_flatten(f"forward_inputs/{k}", [d[k] for d in fi_list])
                 for k in keys
             }
 
         if self.next_forward_inputs:
             keys = self.next_forward_inputs[0].keys()
             batch["next_forward_inputs"] = {
-                k: _stack_and_flatten([d[k] for d in self.next_forward_inputs])
+                k: _stack_and_flatten(
+                    f"next_forward_inputs/{k}",
+                    [d[k] for d in self.next_forward_inputs],
+                )
                 for k in keys
             }
 

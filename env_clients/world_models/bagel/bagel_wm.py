@@ -657,6 +657,27 @@ class BagelWM:
             raise ValueError(f"Expected {batch_size} tasks, got {len(tasks)}.")
         return [str(task) for task in tasks]
 
+    @staticmethod
+    def _resize_image_batch(images: Any, target_hw: tuple[int, int]) -> np.ndarray:
+        images = _to_numpy(images)
+        if images.ndim == 3:
+            images = images[None]
+        if images.ndim != 4 or images.shape[-1] != 3:
+            raise ValueError(f"Expected image batch [N, H, W, 3], got shape {images.shape}.")
+        if images.dtype != np.uint8:
+            images = np.clip(images, 0, 255).astype(np.uint8)
+
+        target_h, target_w = target_hw
+        if images.shape[1:3] == (target_h, target_w):
+            return images
+
+        resample = Image.Resampling.BILINEAR if hasattr(Image, "Resampling") else Image.BILINEAR
+        resized = [
+            np.asarray(Image.fromarray(image).resize((target_w, target_h), resample))
+            for image in images
+        ]
+        return np.stack(resized, axis=0).astype(np.uint8, copy=False)
+
     def _format_action_step(self, action: np.ndarray) -> str:
         normalizer = self._action_normalizer
         if action.shape[-1] != normalizer["min"].shape[0]:
@@ -767,8 +788,8 @@ class BagelWM:
             save_prefix=inference_hyper.get("save_prefix_wrist", f"{base_prefix}_wrist"),
         )
         return (
-            np.asarray(next_head_images, dtype=np.uint8),
-            np.asarray(next_wrist_images, dtype=np.uint8),
+            self._resize_image_batch(next_head_images, head_images.shape[1:3]),
+            self._resize_image_batch(next_wrist_images, wrist_images.shape[1:3]),
         )
 
     @torch.no_grad()
