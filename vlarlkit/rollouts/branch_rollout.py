@@ -73,13 +73,42 @@ def _collate_batch(items: list[Any]) -> Any:
     return np.stack([_as_numpy(item) for item in items], axis=0)
 
 
+def _batch_size(batch: Any) -> int:
+    if isinstance(batch, dict):
+        return _batch_size(next(iter(batch.values())))
+    return int(np.asarray(batch).shape[0])
+
+
+def _slice_batch(batch: Any, start: int, end: int | None) -> Any:
+    if isinstance(batch, dict):
+        return {k: _slice_batch(v, start, end) for k, v in batch.items()}
+    return batch[start:end]
+
+
+def _concat_batches(left: Any, right: Any) -> Any:
+    if isinstance(left, dict):
+        return {k: _concat_batches(left[k], right[k]) for k in left}
+    return np.concatenate([left, right], axis=0)
+
+
 def _cycle(loader: DataLoader, sampler: DistributedSampler | None = None):
     epoch = 0
+    carry = None
+    batch_size = int(loader.batch_size)
     while True:
         if sampler is not None:
             sampler.set_epoch(epoch)
         for batch in loader:
-            yield batch
+            if carry is not None:
+                batch = _concat_batches(carry, batch)
+                carry = None
+
+            while _batch_size(batch) >= batch_size:
+                yield _slice_batch(batch, 0, batch_size)
+                batch = _slice_batch(batch, batch_size, None)
+
+            if _batch_size(batch) > 0:
+                carry = batch
         epoch += 1
 
 
@@ -88,18 +117,8 @@ def _load_tasks(dataset_root: Path) -> dict[int, str]:
     with open(dataset_root / "meta" / "tasks.jsonl", "r") as f:
         for line in f:
             item = json.loads(line)
-            task_index = int(item.get("task_index", item.get("task_id")))
-            tasks[task_index] = str(item.get("task", item.get("language", task_index)))
+            tasks[int(item["task_index"])] = str(item["task"])
     return tasks
-
-
-def _get_batch_value(batch: dict[str, Any], *keys: str, required: bool = True):
-    for key in keys:
-        if key in batch:
-            return batch[key]
-    if required:
-        raise KeyError(f"Branch dataset batch is missing one of: {keys}")
-    return None
 
 
 def _plain_dict(value: Any) -> dict[str, Any]:
@@ -197,7 +216,7 @@ class BranchRollout:
                 rank=self._rank,
                 shuffle=True,
                 seed=seed,
-                drop_last=True,
+                drop_last=False,
             )
             shuffle = False
             local_dataset_size = len(sampler)
@@ -218,7 +237,7 @@ class BranchRollout:
             sampler=sampler,
             num_workers=0,
             collate_fn=_collate_batch,
-            drop_last=True,
+            drop_last=False,
             generator=generator,
         )
         return _cycle(loader, sampler)
@@ -244,47 +263,24 @@ class BranchRollout:
             values = values.squeeze(-1)
         return values.astype(np.float32)
 
-    def _task_description(self, task_id: int) -> str:
+    def _task_description(self, task_index: int) -> str:
         if self._tasks is None:
-            return str(task_id)
-        if isinstance(self._tasks, dict):
-            task = self._tasks.get(task_id, self._tasks.get(str(task_id), str(task_id)))
-        else:
-            task = self._tasks[task_id]
-        if isinstance(task, dict):
-            return str(task.get("language", task.get("task", task_id)))
-        return str(task)
+            raise RuntimeError("Branch rollout tasks are not loaded.")
+        return self._tasks[int(task_index)]
 
     def _batch_to_obs(self, batch: dict[str, Any]) -> tuple[dict[str, Any], np.ndarray]:
-        main_images = _get_batch_value(batch, "image", "observation/image")
-        wrist_images = _get_batch_value(
-            batch, "wrist_image", "observation/wrist_image", required=False
-        )
-        states = _get_batch_value(batch, "state", "observation/state")
-
-        task_ids = _get_batch_value(
-            batch, "task_id", "task_index", required=False
-        )
-        if task_ids is None:
-            task_ids = np.zeros((np.asarray(states).shape[0],), dtype=np.int64)
-        task_ids = np.asarray(task_ids).reshape(-1).astype(np.int64)
-
-        prompts = _get_batch_value(batch, "prompt", required=False)
-        if prompts is None:
-            task_descriptions = [
-                self._task_description(int(task_id)) for task_id in task_ids
-            ]
-        else:
-            task_descriptions = [
-                prompt.decode("utf-8") if isinstance(prompt, bytes) else str(prompt)
-                for prompt in np.asarray(prompts).reshape(-1)
-            ]
+        main_images = batch["image"]
+        wrist_images = batch["wrist_image"]
+        states = batch["state"]
+        task_indices = np.asarray(batch["task_index"]).reshape(-1).astype(np.int64)
+        task_ids = np.asarray(batch["task_id"]).reshape(-1).astype(np.int64)
+        task_descriptions = [
+            self._task_description(int(task_index)) for task_index in task_indices
+        ]
 
         obs = {
             "main_images": _image_batch_to_array(main_images),
-            "wrist_images": (
-                _image_batch_to_array(wrist_images) if wrist_images is not None else None
-            ),
+            "wrist_images": _image_batch_to_array(wrist_images),
             "extra_view_images": None,
             "states": _as_numpy(states).astype(np.float32),
             "task_descriptions": task_descriptions,
