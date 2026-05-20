@@ -10,14 +10,14 @@ hydra:
 algorithm:
   normalize_advantages: True
   group_size: 1
-  eval_rollout_epochs: 25
+  eval_rollout_epochs: 5
 
   branch_rollout_epochs: 4
   branch_sample_size: 128
   branch_max_episode_steps: 20
   branch_dataset_root: "/home/mila/s/sunyi/scratch/VLA_MBRL/libero_goal_data"
-  branch_train_repo_id: "libero_goal_chunk_with_wrist"
-  branch_eval_repo_id: "libero_goal_first_step"
+  branch_train_repo_id: "libero_goal_task_3"
+  branch_eval_repo_id: "libero_goal_task_3_first_step"
 
   update_epochs: 10
   global_mini_batch_size: 512
@@ -28,7 +28,7 @@ algorithm:
   clip_ratio_high: 0.1
   clip_ratio_low: 0.1
   clip_ratio_c: 3.0
-  value_clip: 0.1
+  value_clip: 0.2
   huber_delta: 10.0
 
   gamma: 0.99
@@ -39,20 +39,20 @@ world_model:
   base_port: 8002
   load_model_path: "/home/mila/s/sunyi/scratch/Bagel-WM/Bagel-libero-goal"
   edit_kwargs:
-    cfg_text_scale: 4.0
+    cfg_text_scale: 6.0
     cfg_img_scale: 2.0
     cfg_type: parallel
     cfg_interval: [0.4, 1.0]
     cfg_renorm_min: 0.0
     cfg_renorm_type: text_channel
-    timestep_shift: 3.0
+    timestep_shift: 4.0
     num_timesteps: 50
     enable_taylorseer: True
     save_images: False
-    save_dir: "./generated_images"
+    save_dir: "${hydra:runtime.output_dir}/generated_images"
     save_prefix: generated
   und_kwargs:
-    max_length: 1000
+    max_length: 512
     do_sample: False
     temperature: 0.3
 
@@ -61,7 +61,7 @@ env:
   env_client_base_port: 5550
   eval:
     seed: ${runner.seed}
-    total_num_envs: 20
+    total_num_envs: 100
     max_episode_steps: 320
     group_size: 1
     is_eval: True
@@ -81,6 +81,7 @@ model:
     value_after_vlm: True
     noise_level: 0.5
     action_horizon: 10
+    value_head_hidden_sizes: [1024, 512, 256, 128]
 
   data:
     name: "libero"
@@ -96,7 +97,7 @@ training:
     adam_beta1: 0.9
     adam_beta2: 0.95
     adam_eps: 1.0e-08
-    weight_decay: 0.01
+    weight_decay: 1.0e-10
     clip_grad: 1.0
     critic_warmup_steps: 0
     lr_scheduler: "constant"
@@ -115,8 +116,8 @@ training:
 runner:
   seed: 0
   max_epochs: 50
-  eval_interval: 5
-  save_interval: 5
+  eval_interval: 2
+  save_interval: 0
   resume_from: null
   is_debug: False
   logger:
