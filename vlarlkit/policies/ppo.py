@@ -32,7 +32,7 @@ class PPOPolicy:
         self._setup_lr_scheduler()
 
         self._clip_grad = float(self._optim_cfg.get("clip_grad", 0.0))
-        self._critic_warmup_steps = int(self._algo_cfg.get("critic_warmup_steps", 0))
+        self._critic_warmup_steps = int(self._optim_cfg.get("critic_warmup_steps", 0))
         self._global_step = 0
 
     def _setup_optimizer(self) -> None:
