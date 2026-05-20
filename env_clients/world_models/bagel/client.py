@@ -121,7 +121,7 @@ def main():
     parser.add_argument("--edit-cfg-img-scale", type=float, default=2.0)
     parser.add_argument("--edit-cfg-interval-start", type=float, default=0.4)
     parser.add_argument("--edit-cfg-interval-end", type=float, default=1.0)
-    parser.add_argument("--edit-timestep-shift", type=float, default=3.0)
+    parser.add_argument("--edit-timestep-shift", type=float, default=4.0)
     parser.add_argument("--edit-num-timesteps", type=int, default=50)
     parser.add_argument("--edit-cfg-renorm-min", type=float, default=0.0)
     parser.add_argument(

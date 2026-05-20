@@ -568,7 +568,7 @@ class BagelWM:
         edit_cfg_text_scale: float = 4.0,
         edit_cfg_img_scale: float = 2.0,
         edit_cfg_interval: Sequence[float] = (0.4, 1.0),
-        edit_timestep_shift: float = 3.0,
+        edit_timestep_shift: float = 4.0,
         edit_num_timesteps: int = 50,
         edit_cfg_renorm_min: float = 0.0,
         edit_cfg_renorm_type: str = "text_channel",
