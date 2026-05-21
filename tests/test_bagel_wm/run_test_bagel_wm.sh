@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IP="127.0.0.1"
-PORT=8001
-LOAD_MODEL_PATH="/home/mila/s/sunyi/scratch/Bagel-WM/Bagel-libero-goal"
-DATA_DIR="/home/mila/s/sunyi/codes/VLARLKit/tests/test_bagel_wm/test_data"
+IP="${IP:-127.0.0.1}"
+PORT="${PORT:-8002}"
+LOAD_MODEL_PATH="${LOAD_MODEL_PATH:-/home/mila/s/sunyi/scratch/Bagel-WM/Bagel-libero-goal}"
 
-BAGEL_ENV_PATH="third_party/BAGEL/.venv"
-VLARLKIT_ENV_PATH=".venv"
-SERVER_STARTUP_SLEEP=5
-RECV_TIMEOUT_MS=900000
-SAVE_OUTPUT_DIR="/home/mila/s/sunyi/codes/VLARLKit/tests/test_bagel_wm/test_data/rollout_results"
+BAGEL_ENV_PATH="${BAGEL_ENV_PATH:-third_party/BAGEL/.venv}"
+VLARLKIT_ENV_PATH="${VLARLKIT_ENV_PATH:-.venv}"
+SERVER_STARTUP_SLEEP="${SERVER_STARTUP_SLEEP:-5}"
+RECV_TIMEOUT_MS="${RECV_TIMEOUT_MS:-900000}"
+ROLLOUT_STEPS="${ROLLOUT_STEPS:-5}"
+SAMPLE_INDEX="${SAMPLE_INDEX:-0}"
+NUM_SAMPLES="${NUM_SAMPLES:-1}"
+SAVE_OUTPUT_DIR="${SAVE_OUTPUT_DIR:-/tmp/bagel_wm_rollout_results}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+CONFIG_PATH="${REPO_ROOT}/examples/configs/libero_goal_vla_mbpo.yaml"
 
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/BAGEL:${PYTHONPATH:-}"
@@ -45,9 +48,12 @@ fi
 source "${REPO_ROOT}/${VLARLKIT_ENV_PATH}/bin/activate"
 TEST_CMD=(
     python tests/test_bagel_wm/test_bagel_wm.py
-    --data-dir "${DATA_DIR}"
+    --config-path "${CONFIG_PATH}"
     --host "${IP}"
     --port "${PORT}"
+    --sample-index "${SAMPLE_INDEX}"
+    --num-samples "${NUM_SAMPLES}"
+    --rollout-steps "${ROLLOUT_STEPS}"
     --recv-timeout-ms "${RECV_TIMEOUT_MS}"
     --close-server
 )

@@ -1,29 +1,28 @@
 """
-Smoke test for BAGEL WM observation and reward prediction.
+Smoke test for BAGEL WM autoregressive branch rollouts.
 
-Expected data layout:
-    DATA_DIR/
-      images/
-        head_0.jpg
-        wrist_0.jpg
-        ...
-      action_seq.jsonl
+The test reads branch rollout start states from
+examples/configs/libero_goal_vla_mbpo.yaml:
+    algorithm.branch_dataset_root / algorithm.branch_eval_repo_id
 
-Each jsonl row should contain image file names, a task, and an action_sequence, for example:
-    {"head_image": "head_0.jpg", "wrist_image": "wrist_0.jpg",
-     "task": "put the object into the target area",
-     "action_sequence": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]}
+Each loaded start state provides the initial head/wrist observations, task, and
+dataset action. If the sample only has one action, that action is reused while
+the predicted observations are fed back autoregressively for the requested
+number of rollout steps.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow.parquet as pq
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 
 
@@ -34,152 +33,244 @@ from vlarlkit.utils.remote_wm import RemoteWM
 
 
 ACTION_DIM = 7
-IMAGE_SIZE = 256
-HEAD_IMAGE_KEYS = (
-    "head_image",
-    "head_image_file",
-    "head",
-    "main_image",
-    "main_image_file",
-    "main",
-    "image",
-    "image_file",
-    "start_image",
-    "start_image_file",
+DEFAULT_CONFIG_PATH = REPO_ROOT / "examples" / "configs" / "libero_goal_vla_mbpo.yaml"
+IMAGE_COLUMNS = ("image", "wrist_image")
+OPTIONAL_SAMPLE_COLUMNS = (
+    "state",
+    "actions",
+    "action",
+    "task_id",
+    "task_index",
+    "episode_index",
+    "frame_index",
+    "index",
 )
-WRIST_IMAGE_KEYS = ("wrist_image", "wrist_image_file", "wrist")
-TASK_KEYS = ("task", "task_description", "language_instruction", "instruction")
 
 
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    records = []
-    with path.open("r") as f:
+def _plain_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if OmegaConf.is_config(value):
+        return dict(OmegaConf.to_container(value, resolve=False))
+    return dict(value)
+
+
+def _load_config(config_path: Path) -> DictConfig:
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    return OmegaConf.load(config_path)
+
+
+def _resolve_branch_dataset_root(cfg: DictConfig) -> Path:
+    algo_cfg = cfg.algorithm
+    dataset_root = Path(str(algo_cfg.branch_dataset_root)).expanduser()
+    repo_id = str(algo_cfg.branch_eval_repo_id)
+
+    if (dataset_root / "meta").exists():
+        return dataset_root
+
+    candidates = [dataset_root / repo_id, dataset_root / repo_id.split("/")[-1]]
+    for candidate in candidates:
+        if (candidate / "meta").exists():
+            return candidate
+    raise FileNotFoundError(
+        f"Could not find branch eval dataset for repo_id={repo_id!r} under {dataset_root}."
+    )
+
+
+def _load_tasks(dataset_root: Path) -> dict[int, str]:
+    tasks_path = dataset_root / "meta" / "tasks.jsonl"
+    if not tasks_path.is_file():
+        raise FileNotFoundError(f"Task metadata not found: {tasks_path}")
+
+    tasks = {}
+    with tasks_path.open("r") as f:
         for line_idx, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
-            record = json.loads(line)
-            if not isinstance(record, dict):
-                raise ValueError(f"{path}:{line_idx} should contain a JSON object.")
-            records.append(record)
-    if not records:
-        raise ValueError(f"No samples found in {path}.")
-    return records
+            item = json.loads(line)
+            try:
+                tasks[int(item["task_index"])] = str(item["task"])
+            except KeyError as exc:
+                raise KeyError(f"{tasks_path}:{line_idx} is missing {exc}.") from exc
+    if not tasks:
+        raise ValueError(f"No tasks found in {tasks_path}.")
+    return tasks
 
 
-def _get_from_record(record: dict[str, Any], keys: tuple[str, ...]) -> Any | None:
-    for key in keys:
-        if key in record:
-            return record[key]
+def _parquet_files(dataset_root: Path) -> list[Path]:
+    data_dir = dataset_root / "data"
+    if not data_dir.is_dir():
+        raise FileNotFoundError(f"Dataset data directory not found: {data_dir}")
 
-    for container_key in ("images", "start_images", "observation_images"):
-        container = record.get(container_key)
-        if isinstance(container, dict):
-            for key in keys:
-                if key in container:
-                    return container[key]
-    return None
+    files = sorted(data_dir.rglob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No parquet files found under {data_dir}.")
+    return files
 
 
-def _infer_wrist_name(head_name: str) -> str | None:
-    path = Path(head_name)
-    name = path.name
-    if name.startswith("head_"):
-        return str(path.with_name(name.replace("head_", "wrist_", 1)))
-    if name.startswith("main_"):
-        return str(path.with_name(name.replace("main_", "wrist_", 1)))
-    return None
+def _read_start_samples(
+    dataset_root: Path,
+    sample_index: int,
+    num_samples: int,
+) -> list[dict[str, Any]]:
+    if sample_index < 0:
+        raise ValueError("sample_index must be non-negative.")
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive.")
 
+    samples = []
+    seen = 0
+    target_end = sample_index + num_samples
+    for parquet_path in _parquet_files(dataset_root):
+        if seen >= target_end:
+            return samples
+        schema_names = set(pq.ParquetFile(parquet_path).schema_arrow.names)
+        columns = [
+            column
+            for column in (*IMAGE_COLUMNS, *OPTIONAL_SAMPLE_COLUMNS)
+            if column in schema_names
+        ]
+        table = pq.read_table(parquet_path, columns=columns)
+        for row in table.to_pylist():
+            if seen < sample_index:
+                seen += 1
+                continue
+            if seen >= target_end:
+                return samples
+            samples.append(row)
+            seen += 1
 
-def _resolve_image_path(data_dir: Path, image_name: str) -> Path:
-    image_path = Path(image_name)
-    candidates = [
-        image_path,
-        data_dir / image_path,
-        data_dir / "images" / image_path,
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise FileNotFoundError(f"Could not find image '{image_name}' under {data_dir}.")
-
-
-def _load_image(data_dir: Path, image_name: str) -> np.ndarray:
-    image_path = _resolve_image_path(data_dir, image_name)
-    image = Image.open(image_path).convert("RGB").resize((IMAGE_SIZE, IMAGE_SIZE))
-    return np.asarray(image, dtype=np.uint8)
-
-
-def _load_action_sequence(record: dict[str, Any], line_idx: int) -> np.ndarray:
-    if "action_sequence" not in record:
-        raise KeyError(f"Sample {line_idx} does not contain 'action_sequence'.")
-
-    action_sequence = np.asarray(record["action_sequence"], dtype=np.float32)
-    if action_sequence.ndim == 1:
-        action_sequence = action_sequence[None, :]
-    if action_sequence.ndim != 2 or action_sequence.shape[-1] != ACTION_DIM:
+    if len(samples) != num_samples:
         raise ValueError(
-            f"Sample {line_idx} action_sequence should be [T, {ACTION_DIM}], "
-            f"got {action_sequence.shape}."
+            f"Requested {num_samples} sample(s) from index {sample_index}, "
+            f"but only found {seen} sample(s)."
         )
-    return action_sequence
+    return samples
 
 
-def _load_sample(data_dir: Path, record: dict[str, Any], sample_idx: int) -> tuple[dict, np.ndarray]:
-    head_name = _get_from_record(record, HEAD_IMAGE_KEYS)
-    if head_name is None:
-        raise KeyError(
-            f"Sample {sample_idx} should contain one of {HEAD_IMAGE_KEYS}, "
-            "or the same keys under an 'images' field."
-        )
+def _image_to_array(image: Any) -> np.ndarray:
+    if isinstance(image, dict):
+        if image.get("bytes") is not None:
+            image = Image.open(io.BytesIO(image["bytes"])).convert("RGB")
+        elif image.get("path") is not None:
+            image = Image.open(image["path"]).convert("RGB")
+        else:
+            raise ValueError("Image dict must contain either 'bytes' or 'path'.")
 
-    wrist_name = _get_from_record(record, WRIST_IMAGE_KEYS)
-    if wrist_name is None:
-        wrist_name = _infer_wrist_name(str(head_name))
-    if wrist_name is None:
-        raise KeyError(
-            f"Sample {sample_idx} should contain one of {WRIST_IMAGE_KEYS}; "
-            "automatic wrist name inference only supports head_*/main_* names."
+    if isinstance(image, Image.Image):
+        image = image.convert("RGB")
+        return np.asarray(image, dtype=np.uint8)
+
+    arr = np.asarray(image)
+    if arr.ndim == 3 and arr.shape[0] in (1, 3) and arr.shape[-1] not in (1, 3):
+        arr = np.moveaxis(arr, 0, -1)
+    if arr.ndim != 3 or arr.shape[-1] != 3:
+        raise ValueError(f"Expected image [H, W, 3] or [3, H, W], got {arr.shape}.")
+
+    if np.issubdtype(arr.dtype, np.floating):
+        if arr.size > 0 and arr.max() <= 1.0:
+            arr = arr * 255.0
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    elif arr.dtype != np.uint8:
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    return arr
+
+
+def _load_action_sequence(sample: dict[str, Any], sample_idx: int) -> np.ndarray:
+    action_value = sample.get("actions", sample.get("action"))
+    if action_value is None:
+        raise KeyError(f"Sample {sample_idx} does not contain 'actions' or 'action'.")
+
+    actions = np.asarray(action_value, dtype=np.float32)
+    if actions.ndim == 1:
+        actions = actions[None, :]
+    if actions.ndim != 2 or actions.shape[-1] != ACTION_DIM:
+        raise ValueError(
+            f"Sample {sample_idx} actions should be [T, {ACTION_DIM}], got {actions.shape}."
         )
+    return actions
+
+
+def _task_description(sample: dict[str, Any], tasks: dict[int, str], sample_idx: int) -> str:
+    if "task_index" not in sample:
+        raise KeyError(f"Sample {sample_idx} does not contain 'task_index'.")
+    task_index = int(sample["task_index"])
+    if task_index not in tasks:
+        raise KeyError(f"Sample {sample_idx} has unknown task_index={task_index}.")
+    return tasks[task_index]
+
+
+def _sample_label(sample: dict[str, Any], sample_idx: int) -> str:
+    episode = sample.get("episode_index", "unknown")
+    frame = sample.get("frame_index", "unknown")
+    return f"sample={sample_idx}, episode={episode}, frame={frame}"
+
+
+def _sample_to_obs(
+    sample: dict[str, Any],
+    tasks: dict[int, str],
+    sample_idx: int,
+) -> tuple[dict[str, Any], np.ndarray]:
+    for column in IMAGE_COLUMNS:
+        if column not in sample:
+            raise KeyError(f"Sample {sample_idx} does not contain image column {column!r}.")
 
     observations = {
-        "main_images": _load_image(data_dir, str(head_name))[None],
-        "wrist_images": _load_image(data_dir, str(wrist_name))[None],
+        "main_images": _image_to_array(sample["image"])[None],
+        "wrist_images": _image_to_array(sample["wrist_image"])[None],
+        "extra_view_images": None,
+        "task_descriptions": [_task_description(sample, tasks, sample_idx)],
     }
+    if "state" in sample and sample["state"] is not None:
+        observations["states"] = np.asarray(sample["state"], dtype=np.float32)[None]
 
-    task = _get_from_record(record, TASK_KEYS)
-    if task is None:
-        raise KeyError(f"Sample {sample_idx} should contain one of {TASK_KEYS}.")
-    observations["task_descriptions"] = [str(task)]
-
-    actions = _load_action_sequence(record, sample_idx)[None]
-    return observations, actions
+    return observations, _load_action_sequence(sample, sample_idx)
 
 
-def _check_prediction(next_observations: dict, sample_idx: int) -> None:
+def _action_for_step(action_sequence: np.ndarray, step_idx: int) -> np.ndarray:
+    action_idx = min(step_idx, action_sequence.shape[0] - 1)
+    return action_sequence[action_idx][None]
+
+
+def _check_prediction(next_observations: dict, sample_idx: int, step_idx: int) -> None:
     for key in ("main_images", "wrist_images"):
         images = np.asarray(next_observations[key])
         if images.ndim != 4 or images.shape[0] != 1 or images.shape[-1] != 3:
             raise AssertionError(
-                f"Sample {sample_idx} predicted {key} should be [1, H, W, 3], "
-                f"got {images.shape}."
+                f"Sample {sample_idx} step {step_idx} predicted {key} should be "
+                f"[1, H, W, 3], got {images.shape}."
             )
         if images.dtype != np.uint8:
-            raise AssertionError(f"Sample {sample_idx} predicted {key} dtype should be uint8.")
+            raise AssertionError(
+                f"Sample {sample_idx} step {step_idx} predicted {key} dtype should be uint8."
+            )
 
 
-def _save_prediction(output_dir: Path, sample_idx: int, next_observations: dict) -> None:
+def _save_prediction(
+    output_dir: Path,
+    sample_idx: int,
+    step_idx: int,
+    next_observations: dict,
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for key, prefix in (("main_images", "head"), ("wrist_images", "wrist")):
         image = np.asarray(next_observations[key])[0]
-        Image.fromarray(image).save(output_dir / f"{prefix}_pred_{sample_idx}.png")
+        output_path = output_dir / f"{prefix}_sample_{sample_idx}_step_{step_idx}.png"
+        Image.fromarray(image).save(output_path)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Test BAGEL WM prediction from rollout samples.")
-    parser.add_argument("--data-dir", type=Path, required=True)
-    parser.add_argument("--host", type=str, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8002)
+    parser = argparse.ArgumentParser(
+        description="Autoregressive BAGEL WM rollout from configured branch eval starts."
+    )
+    parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--host", type=str, default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--sample-index", type=int, default=0)
+    parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument("--rollout-steps", type=int, default=5)
     parser.add_argument("--recv-timeout-ms", type=int, default=900_000)
     parser.add_argument("--save-output-dir", type=Path, default=None)
     parser.add_argument("--close-server", action="store_true")
@@ -188,48 +279,83 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    records = _load_jsonl(args.data_dir / "action_seq.jsonl")
+    if args.rollout_steps <= 0:
+        raise ValueError("rollout_steps must be positive.")
+
+    cfg = _load_config(args.config_path)
+    dataset_root = _resolve_branch_dataset_root(cfg)
+    tasks = _load_tasks(dataset_root)
+    samples = _read_start_samples(
+        dataset_root=dataset_root,
+        sample_index=args.sample_index,
+        num_samples=args.num_samples,
+    )
+
+    world_model_cfg = cfg.get("world_model", {})
+    host = args.host or str(world_model_cfg.get("host", "127.0.0.1"))
+    port = args.port or int(world_model_cfg.get("base_port", 8002))
+    edit_kwargs = _plain_dict(world_model_cfg.get("edit_kwargs", {}))
+    und_kwargs = _plain_dict(world_model_cfg.get("und_kwargs", {}))
+
+    print(
+        f"Loaded {len(samples)} branch eval start sample(s) from {dataset_root} "
+        f"using {args.config_path}."
+    )
     world_model = RemoteWM(
-        host=args.host,
-        port=args.port,
+        host=host,
+        port=port,
         recv_timeout_ms=args.recv_timeout_ms,
     )
 
     try:
-        for sample_idx, record in enumerate(records):
-            observations, actions = _load_sample(args.data_dir, record, sample_idx)
-            print(f"Sample {sample_idx}: calling get_observations with actions={actions.shape}")
-            next_observations = world_model.get_observations(
-                observations=observations,
-                actions=actions,
-                image_key="main_images",
-                wrist_image_key="wrist_images",
-            )
-            _check_prediction(next_observations, sample_idx)
+        for local_idx, sample in enumerate(samples):
+            sample_idx = args.sample_index + local_idx
+            observations, action_sequence = _sample_to_obs(sample, tasks, sample_idx)
+            task = observations["task_descriptions"][0]
+            label = _sample_label(sample, sample_idx)
             print(
-                f"Sample {sample_idx}: predicted "
-                f"main_images={np.asarray(next_observations['main_images']).shape}, "
-                f"wrist_images={np.asarray(next_observations['wrist_images']).shape}"
+                f"{label}: task={task!r}, action_sequence={action_sequence.shape}, "
+                f"rollout_steps={args.rollout_steps}"
             )
 
-            if args.save_output_dir is not None:
-                _save_prediction(args.save_output_dir, sample_idx, next_observations)
-
-            tasks = observations["task_descriptions"]
-            rewards = np.asarray(
-                world_model.get_rewards(
-                    next_observations,
-                    tasks=tasks,
+            for step_idx in range(args.rollout_steps):
+                actions = _action_for_step(action_sequence, step_idx)
+                next_observations, rewards, terminations = world_model.step(
+                    observations=observations,
+                    actions=actions,
                     image_key="main_images",
+                    wrist_image_key="wrist_images",
+                    edit_kwargs=edit_kwargs,
+                    und_kwargs=und_kwargs,
                 )
-            )
-            if rewards.shape != (1,) or rewards.dtype != np.float32:
-                raise AssertionError(
-                    f"Expected rewards shape (1,) float32, got {rewards.shape} {rewards.dtype}."
-                )
-            print(f"Sample {sample_idx}: task={tasks[0]!r}, reward={float(rewards[0]):.1f}")
+                _check_prediction(next_observations, sample_idx, step_idx)
 
-        print(f"BAGEL WM prediction smoke test passed for {len(records)} sample(s).")
+                rewards = np.asarray(rewards, dtype=np.float32).reshape(-1)
+                terminations = np.asarray(terminations, dtype=bool).reshape(-1)
+                if rewards.shape != (1,) or terminations.shape != (1,):
+                    raise AssertionError(
+                        f"Sample {sample_idx} step {step_idx} expected scalar reward "
+                        f"and termination, got {rewards.shape} and {terminations.shape}."
+                    )
+                print(
+                    f"{label}: step={step_idx + 1}/{args.rollout_steps}, "
+                    f"action_idx={min(step_idx, action_sequence.shape[0] - 1)}, "
+                    f"reward={float(rewards[0]):.1f}, done={bool(terminations[0])}"
+                )
+
+                if args.save_output_dir is not None:
+                    _save_prediction(
+                        args.save_output_dir,
+                        sample_idx,
+                        step_idx,
+                        next_observations,
+                    )
+                observations = next_observations
+
+        print(
+            f"BAGEL WM autoregressive rollout smoke test passed for "
+            f"{len(samples)} sample(s) x {args.rollout_steps} step(s)."
+        )
     finally:
         if args.close_server:
             try:
