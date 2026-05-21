@@ -85,7 +85,8 @@ def main(cfg: DictConfig) -> None:
         if ckpt_meta:
             start_epoch = ckpt_meta["epoch"] + 1
             wandb_run_id = ckpt_meta.get("wandb_run_id")
-            sync_fsdp_to_model(policy.get_model(), actor_model)
+
+    sync_fsdp_to_model(policy.get_model(), actor_model)
 
     if not cfg.runner.is_debug and rank == 0:
         logger_cfg = cfg.runner.get("logger", {})

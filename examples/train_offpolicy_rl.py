@@ -83,7 +83,8 @@ def main(cfg: DictConfig) -> None:
         if ckpt_meta:
             start_epoch = ckpt_meta["epoch"]
             wandb_run_id = ckpt_meta.get("wandb_run_id")
-            sync_fsdp_to_model(policy.get_model(), actor_model)
+
+    sync_fsdp_to_model(policy.get_model(), actor_model)
 
     # Initialize wandb-logger on rank 0 only (after checkpoint load for resume)
     if not cfg.runner.is_debug and rank == 0:
