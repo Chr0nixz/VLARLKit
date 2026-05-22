@@ -13,36 +13,23 @@ from vlarlkit.data.io_struct import RolloutResult
 from vlarlkit.utils.checkpoint import load_checkpoint
 from vlarlkit.utils.fsdp_utils import sync_fsdp_to_model
 from vlarlkit.utils.remote_env import RemoteEnv
-from vlarlkit.utils.remote_wm import RemoteWM
 from vlarlkit.models.openpi import get_model
 from vlarlkit.policies import PPOPolicy
 from vlarlkit.rollouts import BranchRollout
 from vlarlkit.runners import OnPolicyRunner
 
 
-def get_eval_env(cfg: DictConfig, rank: int):
+def get_env(cfg: DictConfig, mode: str, rank: int):
+    """Connect to the remote env client for this rank."""
     host = cfg.env.get("env_client_host", "localhost")
     base_port = int(cfg.env.get("env_client_base_port", 5550))
     port = base_port + rank
-    return RemoteEnv(host=host, port=port, env_mode="eval")
-
-
-def get_world_model(cfg: DictConfig, rank: int):
-    wm_cfg = cfg.world_model
-    host = wm_cfg.get("host", "localhost")
-    base_port = int(wm_cfg.get("base_port", 8002))
-    port = base_port + rank
-    return RemoteWM(
-        host=host,
-        port=port,
-        recv_timeout_ms=900_000,
-        max_retries=1,
-    )
+    return RemoteEnv(host=host, port=port, env_mode=mode)
 
 
 @hydra.main(
     config_path="configs",
-    config_name="libero_goal_vla_mbpo",
+    config_name="libero_goal_vla_mbpo_debug",
     version_base=None,
 )
 def main(cfg: DictConfig) -> None:
@@ -62,18 +49,19 @@ def main(cfg: DictConfig) -> None:
     model = get_model(cfg.model)
     policy = PPOPolicy(cfg, model, rank)
 
-    world_model = get_world_model(cfg, rank)
-    eval_env = get_eval_env(cfg, rank)
+    train_env = get_env(cfg, "train", rank)
+    eval_env = get_env(cfg, "eval", rank)
 
     actor_model = get_model(cfg.model)
     actor_model.to(f"cuda:{rank}")
     train_rollout_result = RolloutResult()
     train_rollout_worker = BranchRollout(
         cfg,
-        world_model,
+        train_env,
         actor_model,
         train_rollout_result,
         mode="train",
+        use_real_env=True
     )
     eval_rollout_worker = BranchRollout(
         cfg,

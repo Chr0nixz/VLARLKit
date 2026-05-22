@@ -66,6 +66,13 @@ def _image_batch_to_array(images: Any) -> np.ndarray:
     raise ValueError(f"Expected image batch with 3 or 4 dims, got {arr.shape}.")
 
 
+def _clip_values_min_zero(values: Any) -> np.ndarray | None:
+    if values is None:
+        return None
+    values_np = to_numpy(values)
+    return np.maximum(values_np, 0.0).astype(np.float32, copy=False)
+
+
 def _collate_batch(items: list[Any]) -> Any:
     first = items[0]
     if isinstance(first, dict):
@@ -133,42 +140,53 @@ class BranchRollout:
     def __init__(
         self,
         cfg,
-        world_model,
+        env_model,
         actor_model,
         rollout_result: RolloutResult | None = None,
         mode: str = "train",
         branch_data_iter: Any | None = None,
+        use_real_env: bool = False,
     ):
         self.cfg = cfg
-        self.world_model = world_model
+        self.env_model = env_model
         self.actor_model = actor_model
         self.actor_model.eval()
         self.rollout_result = rollout_result
         self.mode = mode
 
         self._algo_cfg = cfg.algorithm
-        self._global_branch_sample_size = int(self._algo_cfg.branch_sample_size)
+        self._use_real_env = use_real_env
         self._world_size = dist.get_world_size() if dist.is_initialized() else 1
         self._rank = dist.get_rank() if dist.is_initialized() else 0
+        env_cfg = self.cfg.env.get(self.mode, self.cfg.env.get("eval"))
+        self._env_type = env_cfg.get("env_type", "libero")
+        if self._use_real_env:
+            self._global_branch_sample_size = int(env_cfg.total_num_envs)
+            max_steps = int(env_cfg.max_episode_steps)
+        else:
+            self._global_branch_sample_size = int(self._algo_cfg.branch_sample_size)
+            max_steps = int(self._algo_cfg.get("branch_max_episode_steps"))
         assert self._global_branch_sample_size % self._world_size == 0, (
-            f"branch_sample_size ({self._global_branch_sample_size}) must be divisible "
+            f"global branch sample size ({self._global_branch_sample_size}) must be divisible "
             f"by world_size ({self._world_size})."
         )
         self._branch_sample_size = self._global_branch_sample_size // self._world_size
-        max_steps = int(self._algo_cfg.get("branch_max_episode_steps"))
-        env_cfg = self.cfg.env.get(self.mode, self.cfg.env.get("eval"))
-        self._env_type = env_cfg.get("env_type", "libero")
         num_action_chunks = int(self.cfg.model.num_action_chunks)
         assert max_steps % num_action_chunks == 0, (
-            f"branch_max_episode_steps ({max_steps}) must be divisible by "
+            f"max_episode_steps ({max_steps}) must be divisible by "
             f"num_action_chunks ({num_action_chunks})."
         )
+        self._num_action_chunks = num_action_chunks
         self._num_chunk_steps = max_steps // num_action_chunks
         self._gamma = float(self._algo_cfg.get("gamma", 0.99))
         self._validate_world_model_actor_config()
-        world_model_cfg = self.cfg.get("world_model", {})
-        self._edit_kwargs = _plain_dict(world_model_cfg.get("edit_kwargs", {}))
-        self._und_kwargs = _plain_dict(world_model_cfg.get("und_kwargs", {}))
+        if self._use_real_env:
+            self._edit_kwargs = {}
+            self._und_kwargs = {}
+        else:
+            world_model_cfg = self.cfg.get("world_model", {})
+            self._edit_kwargs = _plain_dict(world_model_cfg.get("edit_kwargs", {}))
+            self._und_kwargs = _plain_dict(world_model_cfg.get("und_kwargs", {}))
         self._tasks = None
         self._data_iter = branch_data_iter or self._build_branch_data_iter()
 
@@ -224,7 +242,7 @@ class BranchRollout:
             generator = torch.Generator()
             generator.manual_seed(seed)
 
-        if local_dataset_size < self._branch_sample_size:
+        if not self._use_real_env and local_dataset_size < self._branch_sample_size:
             raise ValueError(
                 f"per-rank branch_sample_size ({self._branch_sample_size}) is larger than "
                 f"the per-rank branch dataset size ({local_dataset_size})."
@@ -261,7 +279,7 @@ class BranchRollout:
         values = to_numpy(values)
         if values.ndim > 1:
             values = values.squeeze(-1)
-        return values.astype(np.float32)
+        return np.maximum(values, 0.0).astype(np.float32, copy=False)
 
     def _task_description(self, task_index: int) -> str:
         if self._tasks is None:
@@ -287,6 +305,22 @@ class BranchRollout:
         }
         return obs, task_ids
 
+    def _reset_real_env(
+        self,
+        batch: dict[str, Any],
+    ) -> tuple[dict[str, Any], np.ndarray]:
+        sim_states = _as_numpy(batch["sim_state"])
+        sim_state_lens = (
+            np.asarray(batch["sim_state_len"]).reshape(-1).astype(np.int32)
+        )
+        task_ids = np.asarray(batch["task_id"]).reshape(-1).astype(np.int64)
+        obs, _ = self.env_model.reset_to_states(
+            sim_states=sim_states,
+            sim_state_lens=sim_state_lens,
+            task_ids=task_ids,
+        )
+        return obs, task_ids
+
     def _sample_actions(self, obs: dict[str, Any]):
         with torch.no_grad():
             actions, info = self.actor_model.predict_action_batch(obs, mode=self.mode)
@@ -305,7 +339,7 @@ class BranchRollout:
         obs: dict[str, Any],
         actions: np.ndarray,
     ) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
-        next_obs, rewards, terminations = self.world_model.step(
+        next_obs, rewards, terminations = self.env_model.step(
             observations=obs,
             actions=actions,
             image_key="main_images",
@@ -317,26 +351,62 @@ class BranchRollout:
         terminations = np.asarray(terminations, dtype=bool).reshape(-1) # [B,]
         return next_obs, rewards, terminations
 
+    def _step_with_real_env(
+        self,
+        actions: np.ndarray,
+    ) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        next_obs, rewards, terminations, truncations, _ = self.env_model.chunk_step(
+            actions
+        )
+        chunk_terminations = np.asarray(terminations, dtype=bool)
+        rewards = np.asarray(rewards, dtype=np.float32).max(axis=-1)
+        terminations = chunk_terminations.any(axis=-1)
+        truncations = np.asarray(truncations, dtype=bool).any(axis=-1)
+        success_offsets = chunk_terminations.argmax(axis=-1) + 1
+        return next_obs, rewards, terminations, truncations, success_offsets
+
     def rollout_one_epoch(self):
         batch = next(self._data_iter)
-        obs, task_ids = self._batch_to_obs(batch)
+        if self._use_real_env:
+            obs, task_ids = self._reset_real_env(batch)
+        else:
+            obs, task_ids = self._batch_to_obs(batch)
         batch_size = int(np.asarray(obs["states"]).shape[0])
 
         success_once = np.zeros((batch_size,), dtype=bool)
         returns = np.zeros((batch_size,), dtype=np.float32)
-        episode_len = np.full((batch_size,), self._num_chunk_steps, dtype=np.int32)
+        episode_len = np.full(
+            (batch_size,),
+            self._num_chunk_steps * self._num_action_chunks,
+            dtype=np.int32,
+        )
 
         for step in range(self._num_chunk_steps):
             actions, info = self._sample_actions(obs)
-            next_obs, rewards, terminations = self._step_world_model(obs, actions)
-            new_success = terminations
+            if self._use_real_env:
+                (
+                    next_obs,
+                    rewards,
+                    new_success,
+                    truncations,
+                    success_offsets,
+                ) = self._step_with_real_env(actions)
+            else:
+                next_obs, rewards, new_success = self._step_world_model(obs, actions)
+                truncations = np.zeros_like(new_success, dtype=bool)
+                if step == self._num_chunk_steps - 1:
+                    truncations[:] = True
+                success_offsets = np.full(
+                    batch_size,
+                    self._num_action_chunks,
+                    dtype=np.int32,
+                )
             first_success = np.logical_and(new_success, ~success_once)
-            episode_len[first_success] = step + 1
+            episode_len[first_success] = (
+                step * self._num_action_chunks + success_offsets[first_success]
+            )
             success_once = np.logical_or(success_once, new_success)
             terminations = success_once.copy()
-            truncations = np.zeros_like(terminations, dtype=bool)
-            if step == self._num_chunk_steps - 1:
-                truncations[:] = True
             returns += rewards
 
             if self.rollout_result is not None:
@@ -348,7 +418,7 @@ class BranchRollout:
                     terminations=terminations,
                     truncations=truncations,
                     prev_logprobs=info.get("prev_logprobs"),
-                    prev_values=info.get("prev_values"),
+                    prev_values=_clip_values_min_zero(info.get("prev_values")),
                     forward_inputs=info.get("forward_inputs"),
                 )
             obs = next_obs
@@ -366,6 +436,7 @@ class BranchRollout:
             "success_once": success_once,
             "return": returns,
             "task_id": task_ids,
+            "episode_len": episode_len,
         }
 
     def run_rollout(self, rollout_epochs: int):
