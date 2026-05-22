@@ -50,7 +50,7 @@ class EnvServer:
     """ZMQ REP server that hosts train/eval environments for a single rank."""
 
     CALLABLE_METHODS = frozenset({
-        "reset", "step", "chunk_step",
+        "reset", "reset_to_states", "step", "chunk_step",
         "update_reset_state_ids", "flush_video",
     })
 

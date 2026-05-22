@@ -121,6 +121,22 @@ class RemoteEnv:
         obs, info = self._call("reset", **kwargs)
         return self.prepare_observations(obs), info
 
+    def reset_to_states(
+        self,
+        sim_states,
+        sim_state_lens,
+        task_ids,
+        warmup_steps: int = 10,
+    ):
+        obs, info = self._call(
+            "reset_to_states",
+            sim_states=sim_states,
+            sim_state_lens=sim_state_lens,
+            task_ids=task_ids,
+            warmup_steps=warmup_steps,
+        )
+        return self.prepare_observations(obs), info
+
     def step(self, actions=None):
         obs, reward, terminations, truncations, infos = self._call(
             "step", actions=actions

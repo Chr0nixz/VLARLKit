@@ -325,6 +325,50 @@ class LiberoEnv(gym.Env):
         infos = {}
         return obs, infos
 
+    def reset_to_states(
+        self,
+        sim_states,
+        sim_state_lens,
+        task_ids,
+        warmup_steps: int = 10,
+    ):
+        env_idx = np.arange(self.num_envs)
+        task_ids = np.asarray(task_ids).reshape(-1).astype(int)
+        sim_state_lens = np.asarray(sim_state_lens).reshape(-1).astype(int)
+
+        reconfig_env_idx = []
+        for env_id, task_id in enumerate(task_ids):
+            if self.task_ids[env_id] != task_id:
+                reconfig_env_idx.append(env_id)
+            self.task_ids[env_id] = task_id
+            self.trial_ids[env_id] = 0
+
+        if reconfig_env_idx:
+            env_fn_params = self.get_env_fn_params(reconfig_env_idx)
+            self.env.reconfigure_env_fns(env_fn_params, reconfig_env_idx)
+
+        self.env.seed(self.seed * self.num_envs)
+        self.env.reset(id=env_idx)
+        init_states = [
+            np.asarray(sim_states[env_id])[: sim_state_lens[env_id]]
+            for env_id in env_idx
+        ]
+        self.env.set_init_state(init_state=init_states, id=env_idx)
+
+        for _ in range(warmup_steps):
+            zero_actions = np.zeros((self.num_envs, 7))
+            if self.cfg.reset_gripper_open:
+                zero_actions[:, -1] = -1
+            raw_obs, _reward, terminations, info_lists = self.env.step(
+                zero_actions, env_idx
+            )
+
+        self.current_raw_obs = list(raw_obs)
+        obs = self._wrap_obs(self.current_raw_obs)
+        self._reset_metrics(env_idx)
+        infos = {}
+        return obs, infos
+
     def step(self, actions=None):
         """Step the environment with the given actions."""
         if isinstance(actions, torch.Tensor):
@@ -332,12 +376,15 @@ class LiberoEnv(gym.Env):
 
         self._elapsed_steps += 1
         raw_obs, _reward, terminations, info_lists = self.env.step(actions)
+        raw_terminations = terminations.copy()
         self.current_raw_obs = raw_obs
         infos = list_of_dict_to_dict_of_list(info_lists)
         truncations = self.elapsed_steps >= self.cfg.max_episode_steps
         obs = self._wrap_obs(raw_obs)
 
         step_reward = self._calc_step_reward(terminations)
+        if self.use_rel_reward:
+            terminations = self.prev_step_reward > 0
 
         if self.video_cfg.save_video:
             plot_infos = {
@@ -349,7 +396,7 @@ class LiberoEnv(gym.Env):
 
         infos = self._record_metrics(step_reward, terminations, infos)
         if self.ignore_terminations:
-            infos["episode"]["success_at_end"] = terminations.copy()
+            infos["episode"]["success_at_end"] = raw_terminations
             terminations[:] = False
 
         return (
@@ -404,15 +451,17 @@ class LiberoEnv(gym.Env):
         )
 
     def _calc_step_reward(self, terminations):
-        step_penalty = -1.0 if self.use_step_penalty else 0.0
         termination_bonus = self.cfg.reward_coef * terminations
-        reward = step_penalty + termination_bonus
 
         if self.use_rel_reward:
-            reward_diff = reward - self.prev_step_reward
-            self.prev_step_reward = reward
+            reward_diff = termination_bonus - self.prev_step_reward
+            update_mask = termination_bonus > self.prev_step_reward
+            self.prev_step_reward[update_mask] = termination_bonus[update_mask]
+            reward_diff[reward_diff < 0] = 0
             return reward_diff
         else:
+            step_penalty = -1.0 if self.use_step_penalty else 0.0
+            reward = step_penalty + termination_bonus
             return reward
 
     def add_new_frames(self, raw_obs, plot_infos):
