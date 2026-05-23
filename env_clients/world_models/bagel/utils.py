@@ -96,7 +96,7 @@ def load_model(
     tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
 
     vae_transform = ImageTransform(1024, 256, 16)
-    vit_transform = ImageTransform(518, 224, 14)
+    vit_transform = ImageTransform(980, 378, 14)
 
     device_map = infer_auto_device_map(
         model,

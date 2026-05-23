@@ -353,7 +353,7 @@ class LiberoEnv(gym.Env):
             np.asarray(sim_states[env_id])[: sim_state_lens[env_id]]
             for env_id in env_idx
         ]
-        self.env.set_init_state(init_state=init_states, id=env_idx)
+        raw_obs = self.env.set_init_state(init_state=init_states, id=env_idx)
 
         for _ in range(warmup_steps):
             zero_actions = np.zeros((self.num_envs, 7))
