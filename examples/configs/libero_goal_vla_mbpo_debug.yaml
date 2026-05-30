@@ -1,4 +1,5 @@
 defaults:
+  - envs/libero_goal@env.train
   - envs/libero_goal@env.eval
   - models/pi05_for_rl@model
   - _self_
