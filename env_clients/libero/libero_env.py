@@ -38,9 +38,6 @@ from .utils import (
 from .venv import ReconfigureSubprocEnv
 from env_clients.utils import (
     list_of_dict_to_dict_of_list,
-    put_info_on_image,
-    save_rollout_video,
-    tile_images,
 )
 
 
@@ -76,9 +73,6 @@ class LiberoEnv(gym.Env):
         self._init_metrics()
         self._elapsed_steps = np.zeros(self.num_envs, dtype=np.int32)
 
-        self.video_cfg = cfg.video_cfg
-        self.video_cnt = 0
-        self.render_images = []
         self.current_raw_obs = None
 
     def _init_env(self):
@@ -386,14 +380,6 @@ class LiberoEnv(gym.Env):
         if self.use_rel_reward:
             terminations = self.prev_step_reward > 0
 
-        if self.video_cfg.save_video:
-            plot_infos = {
-                "rewards": step_reward,
-                "terminations": terminations,
-                "task": self.task_descriptions,
-            }
-            self.add_new_frames(raw_obs, plot_infos)
-
         infos = self._record_metrics(step_reward, terminations, infos)
         if self.ignore_terminations:
             infos["episode"]["success_at_end"] = raw_terminations
@@ -463,24 +449,3 @@ class LiberoEnv(gym.Env):
             step_penalty = -1.0 if self.use_step_penalty else 0.0
             reward = step_penalty + termination_bonus
             return reward
-
-    def add_new_frames(self, raw_obs, plot_infos):
-        images = []
-        for env_id, raw_single_obs in enumerate(raw_obs):
-            info_item = {
-                k: v if np.size(v) == 1 else v[env_id] for k, v in plot_infos.items()
-            }
-            img = raw_single_obs["agentview_image"][::-1, ::-1]
-            img = put_info_on_image(img, info_item)
-            images.append(img)
-        full_image = tile_images(images, nrows=int(np.sqrt(self.num_envs)))
-        self.render_images.append(full_image)
-
-    def flush_video(self, output_dir: Optional[str] = None):
-        save_rollout_video(
-            self.render_images,
-            output_dir=output_dir,
-            video_name=f"{self.video_cnt}",
-        )
-        self.video_cnt += 1
-        self.render_images = []

@@ -154,9 +154,6 @@ class RemoteEnv:
     def update_reset_state_ids(self):
         return self._call("update_reset_state_ids")
 
-    def flush_video(self, video_sub_dir: Optional[str] = None):
-        return self._call("flush_video", video_sub_dir=video_sub_dir)
-
     @property
     def num_envs(self) -> int:
         return self._get_attr("num_envs")

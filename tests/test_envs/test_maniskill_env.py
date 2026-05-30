@@ -27,10 +27,6 @@ def make_cfg(num_envs: int, max_episode_steps: int):
         "wrap_obs_mode": "default",
         "group_size": 1,
         "use_fixed_reset_state_ids": False,
-        "video_cfg": {
-            "save_video": False,
-            "info_on_video": True,
-        },
         "init_params": {
             "id": "PutOnPlateInScene25Main-v3",
             "num_envs": num_envs,

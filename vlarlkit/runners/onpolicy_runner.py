@@ -8,9 +8,11 @@ import torch
 import torch.distributed as dist
 from omegaconf import DictConfig
 
+from vlarlkit.data.io_struct import RolloutResult
 from vlarlkit.rollouts.rollout import Rollout
 from vlarlkit.utils.checkpoint import save_checkpoint
 from vlarlkit.utils.fsdp_utils import allreduce_mean, allreduce_mean_std, sync_fsdp_to_model
+from vlarlkit.utils.video_logging import build_eval_video_log
 
 logger = logging.getLogger("vlarlkit.runner")
 
@@ -115,7 +117,7 @@ class OnPolicyRunner:
 
             train_metrics = allreduce_mean(train_metrics, self.device)
 
-            epoch_log: dict[str, float] = {}
+            epoch_log: dict[str, Any] = {}
 
             if self.rank == 0:
                 logger.info("Updated policy in %.2fs", update_end_time - update_start_time)
@@ -163,23 +165,29 @@ class OnPolicyRunner:
             if self.metric_logger is not None:
                 self.metric_logger.finish()
 
-    def _run_evaluate(self, epoch: int = 0) -> dict[str, float] | None:
+    def _run_evaluate(self, epoch: int = 0) -> dict[str, Any] | None:
         """Run eval on all ranks and all-reduce results."""
         if self.eval_rollout_worker is None:
             return None
 
+        save_video = bool(self.cfg.runner.get("save_video", False))
+        save_video = save_video and self.rank == 0 and self.metric_logger is not None
+        if save_video:
+            if self.eval_rollout_worker.rollout_result is None:
+                self.eval_rollout_worker.rollout_result = RolloutResult()
+
         self.eval_rollout_worker.init_rollout()
-        rollout_result = self.eval_rollout_worker.run_rollout(self.cfg.algorithm.eval_rollout_epochs)
+        rollout_infos = self.eval_rollout_worker.run_rollout(self.cfg.algorithm.eval_rollout_epochs)
 
         stats = allreduce_mean_std({
-            "success": rollout_result["success_once"],
-            "episode_len": rollout_result["episode_len"],
+            "success": rollout_infos["success_once"],
+            "episode_len": rollout_infos["episode_len"],
         }, self.device)
 
         # Gather per-task stats across all ranks
-        task_ids = rollout_result.get("task_id")
+        task_ids = rollout_infos.get("task_id")
         per_task_metrics = self._gather_per_task_stats(
-            rollout_result["success_once"], task_ids,
+            rollout_infos["success_once"], task_ids,
         ) if task_ids is not None else None
 
         if self.rank == 0:
@@ -201,6 +209,17 @@ class OnPolicyRunner:
                     lines.append(f"  task {tid}: success_rate={sr:.4f}, n={count}")
                     eval_metrics[f"eval/task_{tid}_success_rate"] = sr
                 logger.info("\n".join(lines))
+
+            if save_video:
+                eval_metrics.update(
+                    build_eval_video_log(
+                        self.metric_logger,
+                        self.eval_rollout_worker.rollout_result,
+                        success_once=rollout_infos["success_once"],
+                        rollout_epochs=int(self.cfg.algorithm.eval_rollout_epochs),
+                        fps=int(self.cfg.runner.get("eval_video_fps", 10)),
+                    )
+                )
 
             return eval_metrics
 

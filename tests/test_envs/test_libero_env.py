@@ -31,10 +31,6 @@ def make_cfg(num_envs: int, max_episode_steps: int):
         "use_ordered_reset_state_ids": False,
         "specific_reset_id": None,
         "max_episode_steps": max_episode_steps,
-        "video_cfg": {
-            "save_video": False,
-            "info_on_video": True,
-        },
         "init_params": {
             "camera_heights": 256,
             "camera_widths": 256,

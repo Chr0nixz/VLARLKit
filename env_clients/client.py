@@ -51,7 +51,7 @@ class EnvServer:
 
     CALLABLE_METHODS = frozenset({
         "reset", "reset_to_states", "step", "chunk_step",
-        "update_reset_state_ids", "flush_video",
+        "update_reset_state_ids",
     })
 
     READABLE_ATTRS = frozenset({

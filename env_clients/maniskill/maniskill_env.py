@@ -23,7 +23,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from mani_skill.envs.sapien_env import BaseEnv
-from mani_skill.utils import common, gym_utils
+from mani_skill.utils import common
 from mani_skill.utils.structs.types import Array
 from mani_skill.utils.visualization.misc import put_info_on_image, tile_images
 from omegaconf import open_dict
@@ -52,8 +52,6 @@ class ManiskillEnv(gym.Env):
         self.num_group = num_envs // cfg.group_size
         self.group_size = cfg.group_size
         self.use_fixed_reset_state_ids = cfg.use_fixed_reset_state_ids
-
-        self.video_cfg = cfg.video_cfg
 
         with open_dict(cfg):
             cfg.init_params.num_envs = num_envs
@@ -363,23 +361,8 @@ class ManiskillEnv(gym.Env):
                 img = tile_images(img, nrows=int(np.sqrt(self.num_envs)))
         return img
 
-    def render(self, info, rew=None):
-        if self.video_cfg.info_on_video:
-            scalar_info = gym_utils.extract_scalars_from_info(
-                common.to_numpy(info), batch_size=self.num_envs
-            )
-            if rew is not None:
-                scalar_info["reward"] = common.to_numpy(rew)
-                if np.size(scalar_info["reward"]) > 1:
-                    scalar_info["reward"] = [
-                        float(rew) for rew in scalar_info["reward"]
-                    ]
-                else:
-                    scalar_info["reward"] = float(scalar_info["reward"])
-            image = self.capture_image(scalar_info)
-        else:
-            image = self.capture_image()
-        return image
+    def render(self, info=None, rew=None):
+        return self.capture_image()
 
     def sample_action_space(self):
         return self.env.action_space.sample()
