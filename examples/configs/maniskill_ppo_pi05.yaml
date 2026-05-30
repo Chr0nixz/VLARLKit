@@ -100,6 +100,7 @@ runner:
   max_epochs: 200
   eval_interval: 5
   save_interval: 10
+  save_video: False
   resume_from: null
   is_debug: False # if True, it will not generate any log files
   logger:

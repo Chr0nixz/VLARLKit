@@ -121,6 +121,7 @@ runner:
   max_epochs: 50
   eval_interval: 1
   save_interval: 0
+  save_video: False
   resume_from: null
   is_debug: False
   logger:

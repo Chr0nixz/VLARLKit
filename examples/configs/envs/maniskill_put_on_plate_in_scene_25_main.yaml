@@ -11,10 +11,6 @@ wrap_obs_mode: default     # raw / simple / default
 group_size: 1
 use_fixed_reset_state_ids: False
 
-video_cfg:
-  save_video: False
-  info_on_video: True
-
 init_params:
   id: PutOnPlateInScene25Main-v3
   num_envs: null # will be set in ManiSkillEnv init
