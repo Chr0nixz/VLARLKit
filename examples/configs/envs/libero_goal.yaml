@@ -12,9 +12,6 @@ reward_coef: 1.0
 # RLinf LiberoEnv specific settings
 reset_gripper_open: True
 is_eval: False
-fixed_env_seed: null
-reset_warmup_steps: 15
-use_raw_success_for_metrics: False
 
 seed: 0
 group_size: 1
