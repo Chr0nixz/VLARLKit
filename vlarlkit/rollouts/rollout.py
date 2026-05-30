@@ -106,9 +106,15 @@ class Rollout:
             # Epoch-end: all envs are truncated, bootstrap V(last_obs)
             last_values = self._get_bootstrap_values(obs)
             if last_values is not None:
-                self.rollout_result.rewards[-1] = (
-                    self.rollout_result.rewards[-1] + self._gamma * last_values
+                bootstrap_mask = ~np.asarray(
+                    self.rollout_result.terminations[-1], dtype=bool
                 )
+                if bootstrap_mask.any():
+                    last_rewards = self.rollout_result.rewards[-1].copy()
+                    last_rewards[bootstrap_mask] += (
+                        self._gamma * last_values[bootstrap_mask]
+                    )
+                    self.rollout_result.rewards[-1] = last_rewards
 
         # Off-policy: run one extra predict to get forward_inputs for the
         # last next_obs, then temporal-shift to build next_forward_inputs.
