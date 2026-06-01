@@ -66,13 +66,6 @@ def _image_batch_to_array(images: Any) -> np.ndarray:
     raise ValueError(f"Expected image batch with 3 or 4 dims, got {arr.shape}.")
 
 
-def _clip_values_min_zero(values: Any) -> np.ndarray | None:
-    if values is None:
-        return None
-    values_np = to_numpy(values)
-    return np.maximum(values_np, 0.0).astype(np.float32, copy=False)
-
-
 def _collate_batch(items: list[Any]) -> Any:
     first = items[0]
     if isinstance(first, dict):
@@ -279,7 +272,7 @@ class BranchRollout:
         values = to_numpy(values)
         if values.ndim > 1:
             values = values.squeeze(-1)
-        return np.maximum(values, 0.0).astype(np.float32, copy=False)
+        return values.astype(np.float32)
 
     def _task_description(self, task_index: int) -> str:
         if self._tasks is None:
@@ -318,6 +311,7 @@ class BranchRollout:
             sim_states=sim_states,
             sim_state_lens=sim_state_lens,
             task_ids=task_ids,
+            warmup_steps=0 if self.mode == 'train' else 10
         )
         return obs, task_ids
 
@@ -418,7 +412,7 @@ class BranchRollout:
                     terminations=terminations,
                     truncations=truncations,
                     prev_logprobs=info.get("prev_logprobs"),
-                    prev_values=_clip_values_min_zero(info.get("prev_values")),
+                    prev_values=info.get("prev_values"),
                     forward_inputs=info.get("forward_inputs"),
                 )
             obs = next_obs
