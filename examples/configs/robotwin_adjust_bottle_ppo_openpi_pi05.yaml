@@ -42,7 +42,7 @@ env:
     reward_coef: ${algorithm.reward_coef}
     max_episode_steps: 200
     group_size: ${algorithm.group_size}
-    assets_path: "/path/to/robotwin_assets"
+    assets_path: "third_party/RoboTwin/assets"
     seeds_path: "env_clients/robotwin/seeds/train_seeds.json"
   eval:
     seed: ${runner.seed}
@@ -52,11 +52,11 @@ env:
     reward_coef: ${algorithm.reward_coef}
     group_size: 1
     use_fixed_reset_state_ids: True
-    assets_path: "/path/to/robotwin_assets"
+    assets_path: ${env.train.assets_path}
     seeds_path: "env_clients/robotwin/seeds/eval_seeds.json"
 
 model:
-  model_path: "/path/to/RLinf/RLinf-Pi05-RoboTwin-SFT-adjust_bottle"
+  model_path: "/network/scratch/s/sunyi/rlinf_sft_models/RLinf-Pi05-RoboTwin-SFT-adjust_bottle"
   num_action_chunks: 50
   action_dim: 14
   use_proprio: True
