@@ -1,10 +1,12 @@
 from vlarlkit.models.openpi.dataconfigs.libero_dataconfig import LeRobotLiberoDataConfig
 from vlarlkit.models.openpi.dataconfigs.miniskill_dataconfig import LeRobotManiSkillDataConfig
+from vlarlkit.models.openpi.dataconfigs.robotwin_dataconfig import LeRobotRobotwinDataConfig
 
 
 DATA_CONFIGS = {
     "libero": LeRobotLiberoDataConfig,
     "maniskill": LeRobotManiSkillDataConfig,
+    "robotwin": LeRobotRobotwinDataConfig,
 }
 
 

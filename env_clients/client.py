@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 ENV_REGISTRY = {
     "libero": "env_clients.libero.libero_env.LiberoEnv",
     "maniskill": "env_clients.maniskill.maniskill_env.ManiskillEnv",
+    "robotwin": "env_clients.robotwin.robotwin_env.RoboTwinEnv",
 }
 
 

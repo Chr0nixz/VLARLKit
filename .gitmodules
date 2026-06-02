@@ -4,3 +4,6 @@
 [submodule "third_party/BAGEL"]
 	path = third_party/BAGEL
 	url = https://github.com/VLARLKit/BAGEL.git
+[submodule "third_party/RoboTwin"]
+	path = third_party/RoboTwin
+	url = https://github.com/RoboTwin-Platform/RoboTwin.git

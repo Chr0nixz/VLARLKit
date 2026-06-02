@@ -1,0 +1,116 @@
+defaults:
+  - envs/robotwin_adjust_bottle@env.train
+  - envs/robotwin_adjust_bottle@env.eval
+  - models/pi05_for_rl@model
+
+hydra:
+  run:
+    dir: outputs/${runner.logger.experiment_name}/${now:%Y-%m-%d_%H-%M}
+
+algorithm:
+  agg_reward: sum
+  normalize_advantages: True
+  kl_penalty: kl
+  group_size: 1
+  reward_coef: 1.0
+  bootstrap_type: standard
+  rollout_epochs: 4
+  eval_rollout_epochs: 1
+
+  update_epochs: 5
+  global_mini_batch_size: 2048
+  micro_batch_size: 32
+  adv_type: gae
+  loss_type: actor_critic
+  kl_beta: 0.0
+  entropy_bonus: 0
+  clip_ratio_high: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_c: 3.0
+  value_clip: 0.2
+  huber_delta: 10.0
+
+  gamma: 0.99
+  gae_lambda: 0.95
+
+env:
+  env_client_host: "localhost"
+  env_client_base_port: 5550
+  train:
+    seed: ${runner.seed}
+    total_num_envs: 256
+    reward_coef: ${algorithm.reward_coef}
+    max_episode_steps: 200
+    group_size: ${algorithm.group_size}
+    assets_path: "/path/to/robotwin_assets"
+    seeds_path: "env_clients/robotwin/seeds/train_seeds.json"
+  eval:
+    seed: ${runner.seed}
+    total_num_envs: 128
+    ignore_terminations: True
+    max_episode_steps: 200
+    reward_coef: ${algorithm.reward_coef}
+    group_size: 1
+    use_fixed_reset_state_ids: True
+    assets_path: "/path/to/robotwin_assets"
+    seeds_path: "env_clients/robotwin/seeds/eval_seeds.json"
+
+model:
+  model_path: "/path/to/RLinf/RLinf-Pi05-RoboTwin-SFT-adjust_bottle"
+  num_action_chunks: 50
+  action_dim: 14
+  use_proprio: True
+  num_steps: 5
+  add_value_head: True
+
+  openpi:
+    config_name: "pi05_aloha_robotwin"
+    num_images_in_input: 3
+    noise_level: 0.3
+    action_horizon: 50
+    value_after_vlm: False
+    detach_critic_input: True
+    discrete_state_input: True
+
+  data:
+    name: "robotwin"
+    repo_id: "physical-intelligence/robotwin"
+    prompt_from_task: True
+    assets_dir: ${model.model_path}
+    extra_delta_transform: True
+    adapt_to_pi: True
+
+training:
+  optim:
+    lr: 5.0e-6
+    value_lr: 1.0e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 0.01
+    clip_grad: 1.0
+    critic_warmup_steps: 0
+    lr_scheduler: "constant"
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "no_shard"
+    gradient_checkpointing: False
+    forward_prefetch: False
+    backward_prefetch: null
+    mixed_precision:
+      param_dtype: ${model.precision}
+      reduce_dtype: ${model.precision}
+      buffer_dtype: ${model.precision}
+
+runner:
+  seed: 0
+  max_epochs: 1000
+  eval_interval: 10
+  save_interval: 10
+  save_video: False
+  resume_from: null
+  is_debug: False
+  logger:
+    project: "VLARLKit"
+    experiment_name: "robotwin_ppo_openpi_pi05"

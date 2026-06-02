@@ -76,12 +76,16 @@ def get_model(cfg: DictConfig):
     model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
 
     # load data stats
-    data_config_cls = get_data_config(cfg.data.name)(
-        repo_id=cfg.data.repo_id,
-        base_config=DataConfig(prompt_from_task=cfg.data.prompt_from_task),
-        assets=AssetsConfig(assets_dir=cfg.data.assets_dir),
-        extra_delta_transform=cfg.data.extra_delta_transform,
-    )
+    data_config_kwargs = {
+        "repo_id": cfg.data.repo_id,
+        "base_config": DataConfig(prompt_from_task=cfg.data.prompt_from_task),
+        "assets": AssetsConfig(assets_dir=cfg.data.assets_dir),
+        "extra_delta_transform": cfg.data.extra_delta_transform,
+    }
+    for optional_key in ("adapt_to_pi", "default_prompt"):
+        if optional_key in cfg.data:
+            data_config_kwargs[optional_key] = cfg.data[optional_key]
+    data_config_cls = get_data_config(cfg.data.name)(**data_config_kwargs)
     data_config = data_config_cls.create(
         cfg.data.assets_dir, model_config
     )

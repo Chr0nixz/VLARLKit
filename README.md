@@ -22,7 +22,7 @@ An elegant and researcher-friendly RL library for Vision-Language-Action (VLA) m
 |---|---|
 | **RL Algorithms** | [PPO](https://arxiv.org/abs/1707.06347) (on-policy), [DSRL](https://arxiv.org/pdf/2506.15799) (off-policy), [RLT](https://www.pi.website/download/rlt.pdf) (off-policy), [VLA-MBPO](https://rhx11111.github.io/VLA-MBPO/) (model-based RL) |
 | **Base Models** | [π₀.₅](https://github.com/Physical-Intelligence/openpi) |
-| **Benchmarks** | [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), [ManiSkill](https://github.com/haosulab/ManiSkill)|
+| **Benchmarks** | [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), [ManiSkill](https://github.com/haosulab/ManiSkill), [RoboTwin](https://github.com/RoboTwin-Platform/RoboTwin)|
 
 ## 📦 Installation
 
@@ -51,6 +51,9 @@ bash third_party/install_libero.sh
 
 # ManiSkill
 bash third_party/install_maniskill.sh
+
+# RoboTwin
+bash third_party/new_install_robotwin.sh
 ```
 
 ### 🚀 Quick Start
@@ -85,7 +88,7 @@ If you want to have a try with our MBRL method (VLA-MBPO), please follow [BAGEL-
 ## 📋 TODO
 
 - [x] Add ManiSkill benchmark support
-- [ ] Add RoboTwin benchmark support
+- [x] Add RoboTwin benchmark support
 - [ ] Add GRPO algorithm support
 - [x] Add off-policy asynchronous training support
 - [ ] Add OpenVLA base model support
