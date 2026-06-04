@@ -16,13 +16,15 @@ An elegant and researcher-friendly RL library for Vision-Language-Action (VLA) m
 - **Environment-decoupled architecture** — environments run as independent processes via ZMQ, eliminating dependency conflicts between different benchmark simulators
 - **Async off-policy training** — supports asynchronous off-policy training, enabling non-blocking data collection alongside model updates
 
-## 🧩 Supported Algorithms, Base Models, and Benchmarks (Keeping progress)
+## 🧩 Supported Algorithms, Base Models, and Benchmarks (Work in Progress)
 
-| Category | Supported |
-|---|---|
-| **RL Algorithms** | [PPO](https://arxiv.org/abs/1707.06347) (on-policy), [DSRL](https://arxiv.org/pdf/2506.15799) (off-policy), [RLT](https://www.pi.website/download/rlt.pdf) (off-policy), [VLA-MBPO](https://rhx11111.github.io/VLA-MBPO/) (model-based RL) |
-| **Base Models** | [π₀.₅](https://github.com/Physical-Intelligence/openpi) |
-| **Benchmarks** | [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), [ManiSkill](https://github.com/haosulab/ManiSkill), [RoboTwin](https://github.com/RoboTwin-Platform/RoboTwin)|
+| Category | Type | Supported |
+|---|---|---|
+| **RL Algorithms** | On-policy RL | [PPO](https://arxiv.org/abs/1707.06347), [GRPO](https://arxiv.org/abs/2402.03300) |
+|  | Off-policy RL | [DSRL](https://arxiv.org/pdf/2506.15799), [RLT](https://www.pi.website/download/rlt.pdf) |
+|  | Model-based RL | [VLA-MBPO](https://rhx11111.github.io/VLA-MBPO/) |
+| **Base Models** | Flow-based VLA | [π₀.₅](https://github.com/Physical-Intelligence/openpi) |
+| **Benchmarks** | Simulation | [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), [ManiSkill](https://github.com/haosulab/ManiSkill), [RoboTwin](https://github.com/RoboTwin-Platform/RoboTwin) |
 
 ## 📦 Installation
 
@@ -66,15 +68,16 @@ hf download RLinf/RLinf-Pi05-LIBERO-SFT --local-dir <your local path>
 
 # For ManiSkill SFT model:
 # hf download RLinf/RLinf-Pi05-ManiSkill-25Main-SFT --local-dir <your local path>
+
+# For RoboTwin SFT model:
+# hf download RLinf/RLinf-Pi05-RoboTwin-SFT-adjust_bottle --local-dir <your local path>
 ```
 
-Then, change the ``model_path`` and ``assets_dir`` in config file (examples/configs/libero_spatial_ppo_pi05.yaml) to your path.
+Then, change the ``model_path`` in config file (examples/configs/libero_spatial_ppo_pi05.yaml) to your path.
 For example:
 ```yaml
 model:
   model_path: "<your download path>/RLinf-Pi05-LIBERO-SFT"
-  data:
-    assets_dir: "<your download path>/RLinf-Pi05-LIBERO-SFT"
 ```
 
 Now, you can lanuch the script to run!
@@ -89,7 +92,7 @@ If you want to have a try with our MBRL method (VLA-MBPO), please follow [BAGEL-
 
 - [x] Add ManiSkill benchmark support
 - [x] Add RoboTwin benchmark support
-- [ ] Add GRPO algorithm support
+- [x] Add GRPO algorithm support
 - [x] Add off-policy asynchronous training support
 - [ ] Add OpenVLA base model support
 - [x] Add offline and model-based VLA methods support
