@@ -293,6 +293,9 @@ def allreduce_mean_std(
     total_count = stats[-1].item()
     result: dict[str, tuple[float, float]] = {}
     for i, k in enumerate(keys):
+        if total_count <= 0:
+            result[k] = (0.0, 1.0)
+            continue
         total_sum = stats[2 * i].item()
         total_sq_sum = stats[2 * i + 1].item()
         mean = total_sum / total_count

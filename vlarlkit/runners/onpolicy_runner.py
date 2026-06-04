@@ -53,6 +53,7 @@ class OnPolicyRunner:
 
         gamma = float(self.cfg.algorithm.gamma)
         gae_lambda = float(self.cfg.algorithm.gae_lambda)
+        adv_type = str(self.cfg.algorithm.get("adv_type", "gae")).lower()
         normalize_advantages = self.cfg.algorithm.get("normalize_advantages", True)
         max_steps = int(
             self.cfg.algorithm.branch_max_episode_steps
@@ -83,36 +84,44 @@ class OnPolicyRunner:
             rollout_infos = self.train_rollout_worker.run_rollout(rollout_epochs)
             rollout_end_time = time.time()
 
-            rollout_stats = allreduce_mean_std({
+            success_stats = allreduce_mean_std({
                 "success_rate": rollout_infos["success_once"].astype(float),
             }, self.device)
+            rollout_stats = {
+                "success_rate": float(success_stats["success_rate"][0]),
+            }
 
             if self.rank == 0:
                 logger.info("Collected training data in %.2fs", rollout_end_time - rollout_start_time)
 
-            rr.compute_returns_and_advantages(
+            rollout_adv_metrics = self._compute_advantages(
+                rr=rr,
+                adv_type=adv_type,
+                episode_len=episode_len,
                 gamma=gamma,
                 gae_lambda=gae_lambda,
+                normalize_advantages=normalize_advantages,
             )
-
-            if normalize_advantages:
-                mask, _ = rr.compute_loss_mask(episode_len=episode_len)
-                stats = allreduce_mean_std(
-                    {"adv": rr.advantages}, self.device, mask=mask,
-                )
-                mean, std = stats["adv"]
-                rr.norm_adv(mean, std + 1e-5)
 
             # Update policy
             batch = rr.get_batch(compute_loss_masks=True, episode_len=episode_len)
+            rollout_stats.update(
+                allreduce_mean(
+                    self._compute_rollout_stats(
+                        rollout_adv_metrics,
+                        batch["loss_mask"],
+                    ),
+                    self.device,
+                ),
+            )
 
-            batch_stats = allreduce_mean({
-                "adv_mean": batch["advantages"].mean().item(),
-                "returns_mean": batch["returns"].mean().item(),
-            }, self.device)
-
+            update_skipped = rollout_stats["loss_mask_fraction"] <= 0.0
             update_start_time = time.time()
-            train_metrics = self.policy.run_update(batch)
+            if update_skipped:
+                train_metrics = {"skipped_update": 1.0}
+            else:
+                train_metrics = self.policy.run_update(batch)
+                train_metrics["skipped_update"] = 0.0
             update_end_time = time.time()
 
             train_metrics = allreduce_mean(train_metrics, self.device)
@@ -120,16 +129,19 @@ class OnPolicyRunner:
             epoch_log: dict[str, Any] = {}
 
             if self.rank == 0:
-                logger.info("Updated policy in %.2fs", update_end_time - update_start_time)
+                if update_skipped:
+                    logger.info("Skipped policy update because rollout loss mask is empty")
+                else:
+                    logger.info("Updated policy in %.2fs", update_end_time - update_start_time)
                 train_metrics_str = ", ".join(
                     f"{k}={v:.4f}" for k, v in train_metrics.items()
                 )
-                logger.info("Epoch %d/%d - success_rate=%.4f, Train: %s", epoch, max_epochs, rollout_stats["success_rate"][0], train_metrics_str)
-                epoch_log.update({f"rollout/{k}": v for k, v in batch_stats.items()})
-                epoch_log["rollout/success_rate"] = rollout_stats["success_rate"][0]
+                logger.info("Epoch %d/%d - success_rate=%.4f, Train: %s", epoch, max_epochs, rollout_stats["success_rate"], train_metrics_str)
+                epoch_log.update({f"rollout/{k}": v for k, v in rollout_stats.items()})
                 epoch_log.update({f"train/{k}": v for k, v in train_metrics.items()})
 
-            sync_fsdp_to_model(self.policy.get_model(), self.train_rollout_worker.actor_model)
+            if not update_skipped:
+                sync_fsdp_to_model(self.policy.get_model(), self.train_rollout_worker.actor_model)
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -164,6 +176,73 @@ class OnPolicyRunner:
             logger.info("Training completed in %.2fs", total_time)
             if self.metric_logger is not None:
                 self.metric_logger.finish()
+
+    def _compute_advantages(
+        self,
+        rr: RolloutResult,
+        adv_type: str,
+        episode_len: int,
+        gamma: float,
+        gae_lambda: float,
+        normalize_advantages: bool,
+    ) -> dict[str, Any]:
+        if adv_type == "gae":
+            metrics = rr.compute_gae_advantages(
+                gamma=gamma,
+                gae_lambda=gae_lambda,
+            )
+        elif adv_type == "grpo":
+            return rr.compute_grpo_advantages(
+                episode_len=episode_len,
+                group_size=int(self.cfg.algorithm.group_size),
+                filter_rewards=bool(
+                    self.cfg.algorithm.get("filter_rewards", False)
+                ),
+                rewards_lower_bound=float(
+                    self.cfg.algorithm.get("rewards_lower_bound", 0.0)
+                ),
+                rewards_upper_bound=float(
+                    self.cfg.algorithm.get("rewards_upper_bound", 1.0)
+                ),
+            )
+        else:
+            raise ValueError(f"Unsupported advantage type: {adv_type!r}")
+
+        if normalize_advantages and adv_type == "gae":
+            mask, _ = rr.compute_loss_mask(episode_len=episode_len)
+            stats = allreduce_mean_std(
+                {"adv": rr.advantages}, self.device, mask=mask,
+            )
+            mean, std = stats["adv"]
+            rr.norm_adv(mean, std + 1e-5)
+            metrics["advantages"] = rr.advantages
+
+        return metrics
+
+    def _compute_rollout_stats(
+        self,
+        adv_metrics: dict[str, Any],
+        loss_mask: torch.Tensor,
+    ) -> dict[str, float]:
+        mask = loss_mask.float()
+        mask_sum = mask.sum().clamp(min=1.0)
+
+        def _masked_mean(value: Any) -> float:
+            value = torch.as_tensor(value).reshape(-1).float()
+            return ((value * mask).sum() / mask_sum).item()
+
+        stats = {
+            "adv_mean": _masked_mean(adv_metrics["advantages"]),
+            "loss_mask_fraction": mask.mean().item(),
+        }
+        if adv_metrics.get("returns") is not None:
+            stats["returns_mean"] = _masked_mean(adv_metrics["returns"])
+        stats.update({
+            k: float(v)
+            for k, v in adv_metrics.items()
+            if k not in ("advantages", "returns")
+        })
+        return stats
 
     def _run_evaluate(self, epoch: int = 0) -> dict[str, Any] | None:
         """Run eval on all ranks and all-reduce results."""

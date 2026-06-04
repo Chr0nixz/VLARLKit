@@ -14,7 +14,7 @@ from vlarlkit.utils.checkpoint import load_checkpoint
 from vlarlkit.utils.fsdp_utils import sync_fsdp_to_model
 from vlarlkit.utils.remote_env import RemoteEnv
 from vlarlkit.models.openpi import get_model
-from vlarlkit.policies import PPOPolicy
+from vlarlkit.policies import get_onpolicy_policy
 from vlarlkit.rollouts import Rollout
 from vlarlkit.runners import OnPolicyRunner
 
@@ -50,7 +50,7 @@ def main(cfg: DictConfig) -> None:
 
     # Initialize policy
     model = get_model(cfg.model)
-    policy = PPOPolicy(cfg, model, rank)
+    policy = get_onpolicy_policy(cfg, model, rank)
 
     # Initialize envs
     train_env = get_env(cfg, "train", rank)

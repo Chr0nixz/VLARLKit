@@ -26,6 +26,7 @@ class RolloutResult:
 
     returns: np.ndarray | None = field(default=None, repr=False)
     advantages: np.ndarray | None = field(default=None, repr=False)
+    _loss_filter_mask: np.ndarray | None = field(default=None, repr=False)
 
     def clear(self) -> None:
         """Clear all list fields and reset returns/advantages for a new rollout."""
@@ -41,6 +42,7 @@ class RolloutResult:
         self.next_forward_inputs.clear()
         self.returns = None
         self.advantages = None
+        self._loss_filter_mask = None
 
     def append_step(
         self,
@@ -75,11 +77,11 @@ class RolloutResult:
         )
         self.next_forward_inputs = [self.forward_inputs[t + 1] for t in range(T)]
 
-    def compute_returns_and_advantages(
+    def compute_gae_advantages(
         self,
         gamma: float,
         gae_lambda: float,
-    ):
+    ) -> dict[str, Any]:
         """
         Compute returns and advantages using GAE (Generalized Advantage Estimation).
 
@@ -90,6 +92,7 @@ class RolloutResult:
             gamma: Discount factor.
             gae_lambda: GAE lambda parameter controlling the bias-variance trade-off.
         """
+        self._loss_filter_mask = None
         num_steps = len(self.rewards)
         rewards = np.stack(self.rewards).astype(np.float32)         # (T, n_envs)
         values = np.stack(self.prev_values).astype(np.float32)      # (T, n_envs, 1)
@@ -112,18 +115,14 @@ class RolloutResult:
 
         self.returns = advantages + values
         self.advantages = advantages
+        return {
+            "advantages": self.advantages,
+            "returns": self.returns,
+        }
 
-    def compute_loss_mask(
+    def _compute_episode_loss_mask(
         self, episode_len: int
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute a boolean mask and per-sample loss_mask_ratio.
-
-        Returns:
-            mask: (T*n_envs,) bool — True before the first termination per env.
-            loss_mask_ratio: (T*n_envs,) float32 — valid_steps / episode_len
-                per (episode, env), broadcast to every step. Used to up-weight
-                short (successful) episodes in the loss.
-        """
         terminations = np.stack(self.terminations).astype(np.float32)  # (T, n_envs)
         T, n_envs = terminations.shape
         assert T % episode_len == 0, (
@@ -136,10 +135,88 @@ class RolloutResult:
         shifted[:, 1:] = cum[:, :-1]
         mask = (shifted == 0)  # (num_episodes, episode_len, n_envs)
 
-        # valid steps per (episode, env), broadcast back to all steps
-        valid_counts = mask.sum(axis=1, keepdims=True)  # (num_episodes, 1, n_envs)
-        ratio = (valid_counts / episode_len).astype(np.float32)  # (num_episodes, 1, n_envs)
-        ratio = np.broadcast_to(ratio, mask.shape)  # (num_episodes, episode_len, n_envs)
+        valid_counts = mask.sum(axis=1, keepdims=True)
+        ratio = (valid_counts / episode_len).astype(np.float32)
+        ratio = np.broadcast_to(ratio, mask.shape).copy()
+        return mask, ratio
+
+    def compute_grpo_advantages(
+        self,
+        episode_len: int,
+        group_size: int,
+        filter_rewards: bool = False,
+        rewards_lower_bound: float = 0.0,
+        rewards_upper_bound: float = 1.0,
+    ) -> dict[str, Any]:
+        """Compute group-relative advantages from per-episode scores."""
+        rewards = np.stack(self.rewards).astype(np.float32)  # (T, n_envs)
+        T, n_envs = rewards.shape
+        assert group_size > 0, f"group_size must be positive, got {group_size}"
+        assert T % episode_len == 0, (
+            f"T ({T}) must be divisible by episode_len ({episode_len})"
+        )
+        assert n_envs % group_size == 0, (
+            f"n_envs ({n_envs}) must be divisible by group_size ({group_size})"
+        )
+
+        num_episodes = T // episode_len
+        num_groups = n_envs // group_size
+        loss_mask, _ = self._compute_episode_loss_mask(episode_len)
+        rewards = rewards.reshape(num_episodes, episode_len, n_envs)
+        scores = (rewards * loss_mask.astype(np.float32)).sum(axis=1)
+
+        grouped_scores = scores.reshape(num_episodes, num_groups, group_size)
+        group_mean = grouped_scores.mean(axis=-1, keepdims=True)
+        if group_size > 1:
+            group_std = grouped_scores.std(axis=-1, ddof=1, keepdims=True)
+        else:
+            group_std = np.zeros_like(group_mean)
+        grouped_advantages = (grouped_scores - group_mean) / (group_std + 1e-6)
+
+        step_advantages = grouped_advantages.reshape(num_episodes, n_envs)
+        step_advantages = np.broadcast_to(
+            step_advantages[:, None, :], rewards.shape
+        ).copy()
+        step_advantages *= loss_mask.astype(np.float32)
+
+        self._loss_filter_mask = None
+        groups_kept = np.ones((num_episodes, num_groups), dtype=bool)
+        if filter_rewards:
+            group_mean = group_mean.squeeze(-1)
+            groups_kept = (
+                (group_mean >= rewards_lower_bound)
+                & (group_mean <= rewards_upper_bound)
+            )
+            envs_kept = np.repeat(groups_kept, group_size, axis=1)
+            self._loss_filter_mask = np.broadcast_to(
+                envs_kept[:, None, :], loss_mask.shape
+            ).copy()
+
+        self.returns = None
+        self.advantages = step_advantages.reshape(T, n_envs)
+
+        sample_keep_fraction = float(groups_kept.mean()) if groups_kept.size else 1.0
+        return {
+            "advantages": self.advantages,
+            "grpo_score_mean": float(scores.mean()),
+            "grpo_score_std": float(scores.std()),
+            "grpo_group_keep_fraction": sample_keep_fraction,
+        }
+
+    def compute_loss_mask(
+        self, episode_len: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute a boolean mask and per-sample loss_mask_ratio.
+
+        Returns:
+            mask: (T*n_envs,) bool — True before the first termination per env.
+            loss_mask_ratio: (T*n_envs,) float32 — valid_steps / episode_len
+                per (episode, env), broadcast to every step. Used to up-weight
+                short (successful) episodes in the loss.
+        """
+        mask, ratio = self._compute_episode_loss_mask(episode_len)
+        if self._loss_filter_mask is not None:
+            mask = mask & self._loss_filter_mask
 
         return mask.reshape(-1).astype(bool), ratio.reshape(-1).copy()
 
@@ -212,6 +289,7 @@ class RolloutResult:
             }
 
         if compute_loss_masks:
+            assert episode_len is not None, "episode_len is required when compute_loss_masks=True"
             mask, ratio = self.compute_loss_mask(episode_len=episode_len)
             batch["loss_mask"] = torch.from_numpy(mask.astype(np.float32))
             batch["loss_mask_ratio"] = torch.from_numpy(ratio)

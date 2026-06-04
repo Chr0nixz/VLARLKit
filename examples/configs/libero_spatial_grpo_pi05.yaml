@@ -1,0 +1,111 @@
+defaults:
+  - envs/libero_spatial@env.train
+  - envs/libero_spatial@env.eval
+  - models/pi05_for_rl@model
+  - _self_
+
+hydra:
+  run:
+    dir: outputs/${runner.logger.experiment_name}/${now:%Y-%m-%d_%H-%M}
+
+algorithm:
+  policy_class: grpo
+  agg_reward: max
+  normalize_advantages: False # GRPO always normalize adv
+  norm_loss_by_traj_len: True
+  kl_penalty: kl
+  group_size: 8
+  reward_coef: 1.0
+  bootstrap_type: none
+  rollout_epochs: 8
+  eval_rollout_epochs: 25
+
+  update_epochs: 1
+  global_mini_batch_size: 2048
+  micro_batch_size: 128
+  adv_type: grpo
+  loss_type: actor
+  kl_beta: 0.0
+  entropy_bonus: 0
+  clip_ratio_high: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_c: 3.0
+
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  filter_rewards: True
+  rewards_lower_bound: 0.1
+  rewards_upper_bound: 0.9
+
+env:
+  env_client_host: "localhost"
+  env_client_base_port: 5550
+  train:
+    seed: ${runner.seed}
+    total_num_envs: 64
+    max_episode_steps: 240
+    reward_coef: ${algorithm.reward_coef}
+    group_size: ${algorithm.group_size}
+  eval:
+    seed: ${runner.seed}
+    total_num_envs: 20
+    max_episode_steps: 240
+    group_size: 1
+    use_ordered_reset_state_ids: True
+
+
+model:
+  model_path: "/network/scratch/s/sunyi/rlinf_sft_models/RLinf-Pi05-LIBERO-SFT"
+  num_action_chunks: 5
+  action_dim: 7
+  use_proprio: True
+  num_steps: 3
+  add_value_head: False
+
+  openpi:
+    config_name: "pi05_libero"
+    num_images_in_input: 2
+    value_after_vlm: True
+    action_horizon: 10
+
+  data:
+    name: "libero"
+    repo_id: "physical-intelligence/libero"
+    prompt_from_task: True
+    assets_dir: ${model.model_path}
+    extra_delta_transform: False
+
+
+training:
+  optim:
+    lr: 5.0e-6
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 0.01
+    clip_grad: 1.0
+    lr_scheduler: "constant"
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "no_shard"
+    gradient_checkpointing: False
+    forward_prefetch: False
+    backward_prefetch: null
+    mixed_precision:
+      param_dtype: ${model.precision}
+      reduce_dtype: ${model.precision}
+      buffer_dtype: ${model.precision}
+
+runner:
+  seed: 0
+  max_epochs: 300
+  eval_interval: 10
+  save_interval: 10
+  save_video: False
+  resume_from: null
+  is_debug: False
+  logger:
+    project: "VLARLKit"
+    experiment_name: "libero_spatial_grpo_pi05"
