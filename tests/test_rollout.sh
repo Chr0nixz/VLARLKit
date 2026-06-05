@@ -11,8 +11,7 @@ ENV_PID=$!
 conda deactivate
 
 # launch the rollout worker
-source .venv/bin/activate
-python tests/test_rollout.py
+uv run --project model_backends/openpi python tests/test_rollout.py
 
 # kill the env client process
 kill $ENV_PID 2>/dev/null

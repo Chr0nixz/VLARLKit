@@ -1,7 +1,7 @@
 import hydra
 from omegaconf import OmegaConf
 
-from vlarlkit.models.openpi import get_model
+from vlarlkit.models import get_model
 
 @hydra.main(config_path="../examples/configs", config_name="libero_10_ppo_pi05.yaml")
 def main(cfg):

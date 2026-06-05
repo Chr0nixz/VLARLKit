@@ -5,7 +5,7 @@ import time
 
 from vlarlkit.utils.action_utils import prepare_actions
 from vlarlkit.utils.remote_env import RemoteEnv
-from vlarlkit.models.openpi import get_model
+from vlarlkit.models import get_model
 
 
 def rollout_one_epoch(cfg, env, model):
@@ -26,7 +26,7 @@ def rollout_one_epoch(cfg, env, model):
         actions = prepare_actions(
             raw_chunk_actions=actions,
             env_type=cfg.env.eval.env_type,
-            model_type=cfg.model.model_type, 
+            model_backend=cfg.model.backend,
             num_action_chunks=cfg.model.num_action_chunks,
             action_dim=cfg.model.action_dim,
             policy=cfg.model.get("policy_setup", None)
