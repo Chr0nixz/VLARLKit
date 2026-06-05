@@ -1,0 +1,23 @@
+[project]
+name = "vlarlkit-openpi"
+version = "0.1.0"
+description = "OpenPI model backend for VLARLKit"
+readme = "README.md"
+requires-python = "==3.11.*"
+dependencies = [
+    "openpi",
+    "safetensors",
+    "vlarlkit",
+]
+
+[tool.uv.sources]
+openpi = { git = "https://github.com/RLinf/openpi", branch = "main" }
+vlarlkit = { path = "../..", editable = true }
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vlarlkit_openpi*"]

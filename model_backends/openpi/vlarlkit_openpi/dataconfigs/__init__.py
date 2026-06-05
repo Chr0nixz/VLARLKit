@@ -1,6 +1,6 @@
-from vlarlkit.models.openpi.dataconfigs.libero_dataconfig import LeRobotLiberoDataConfig
-from vlarlkit.models.openpi.dataconfigs.miniskill_dataconfig import LeRobotManiSkillDataConfig
-from vlarlkit.models.openpi.dataconfigs.robotwin_dataconfig import LeRobotRobotwinDataConfig
+from vlarlkit_openpi.dataconfigs.libero_dataconfig import LeRobotLiberoDataConfig
+from vlarlkit_openpi.dataconfigs.miniskill_dataconfig import LeRobotManiSkillDataConfig
+from vlarlkit_openpi.dataconfigs.robotwin_dataconfig import LeRobotRobotwinDataConfig
 
 
 DATA_CONFIGS = {

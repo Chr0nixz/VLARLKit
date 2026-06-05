@@ -7,7 +7,7 @@ from openpi.models import model as _model
 from openpi.models.pi0_config import Pi0Config
 from openpi.models_pytorch.pi0_pytorch import PI0Pytorch, make_att_2d_masks
 
-from vlarlkit.models.openpi.openpi_for_rl import OpenPi0ForRL
+from vlarlkit_openpi.openpi_for_rl import OpenPi0ForRL
 
 
 @dataclass(frozen=True)

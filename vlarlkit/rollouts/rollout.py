@@ -54,7 +54,7 @@ class Rollout:
             actions = prepare_actions(
                 raw_chunk_actions=actions,
                 env_type=self.cfg.env[self.mode].env_type,
-                model_type=self.cfg.model.model_type,
+                model_backend=self.cfg.model.backend,
                 num_action_chunks=self.cfg.model.num_action_chunks,
                 action_dim=self.cfg.model.action_dim,
                 policy=self.cfg.model.get("policy_setup", None)

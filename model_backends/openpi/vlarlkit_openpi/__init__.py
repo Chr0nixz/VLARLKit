@@ -29,9 +29,9 @@ _MODEL_REGISTRY = None
 def _get_registry():
     global _MODEL_REGISTRY
     if _MODEL_REGISTRY is None:
-        from vlarlkit.models.openpi.openpi_for_rl import OpenPi0RLConfig, OpenPi0ForRL
-        from vlarlkit.models.openpi.openpi_for_dsrl import OpenPi0DSRLConfig, OpenPi0ForDSRL
-        from vlarlkit.models.openpi.openpi_for_rlt import OpenPi0RLTConfig, OpenPi0ForRLT
+        from vlarlkit_openpi.openpi_for_rl import OpenPi0RLConfig, OpenPi0ForRL
+        from vlarlkit_openpi.openpi_for_dsrl import OpenPi0DSRLConfig, OpenPi0ForDSRL
+        from vlarlkit_openpi.openpi_for_rlt import OpenPi0RLTConfig, OpenPi0ForRLT
 
         _MODEL_REGISTRY = {
             "OpenPi0ForRL": (OpenPi0RLConfig, OpenPi0ForRL),
@@ -50,7 +50,7 @@ def get_model(cfg: DictConfig):
     from openpi.training import checkpoints
     from openpi.training.config import AssetsConfig, DataConfig
 
-    from vlarlkit.models.openpi.dataconfigs import get_data_config
+    from vlarlkit_openpi.dataconfigs import get_data_config
 
     # Route to the correct model class
     model_config_dict = dict(cfg.openpi)

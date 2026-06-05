@@ -48,10 +48,10 @@ def prepare_actions_for_maniskill(
 
 def prepare_actions_for_libero(
     raw_chunk_actions,
-    model_type,
+    model_backend,
 ) -> np.ndarray:
     chunk_actions = raw_chunk_actions
-    if model_type in ["openvla", "openvla_oft"]:
+    if model_backend in ["openvla", "openvla_oft"]:
         chunk_actions[..., -1] = 2 * chunk_actions[..., -1] - 1
         chunk_actions[..., -1] = np.sign(chunk_actions[..., -1]) * -1.0
     return chunk_actions
@@ -59,10 +59,10 @@ def prepare_actions_for_libero(
 
 def prepare_actions_for_calvin(
     raw_chunk_actions,
-    model_type,
+    model_backend,
 ) -> np.ndarray:
     chunk_actions = raw_chunk_actions
-    if model_type == "openpi":
+    if model_backend == "openpi":
         chunk_actions[..., -1] = np.sign(chunk_actions[..., -1])
     else:
         chunk_actions[..., -1] = np.where(chunk_actions[..., -1] > 0, 1, -1)
@@ -72,7 +72,7 @@ def prepare_actions_for_calvin(
 def prepare_actions(
     raw_chunk_actions,
     env_type: str,
-    model_type: str,
+    model_backend: str,
     num_action_chunks,
     action_dim,
     action_scale: float = 1.0,
@@ -87,7 +87,7 @@ def prepare_actions(
     if env_type == "libero":
         chunk_actions = prepare_actions_for_libero(
             raw_chunk_actions=raw_chunk_actions,
-            model_type=model_type,
+            model_backend=model_backend,
         )
     elif env_type == "maniskill":
         chunk_actions = prepare_actions_for_maniskill(
@@ -102,7 +102,7 @@ def prepare_actions(
     elif env_type == "calvin":
         chunk_actions = prepare_actions_for_calvin(
             raw_chunk_actions=raw_chunk_actions,
-            model_type=model_type,
+            model_backend=model_backend,
         )
     else:
         raise NotImplementedError
