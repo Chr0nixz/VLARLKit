@@ -14,7 +14,7 @@ from vlarlkit.data.replay_buffer import ReplayBuffer
 from vlarlkit.utils.checkpoint import load_checkpoint
 from vlarlkit.utils.fsdp_utils import sync_fsdp_to_model
 from vlarlkit.utils.remote_env import RemoteEnv
-from vlarlkit.models.openpi import get_model
+from vlarlkit.models import get_model
 from vlarlkit.policies import get_offpolicy_policy
 from vlarlkit.rollouts import Rollout
 from vlarlkit.runners import OffPolicyRunner

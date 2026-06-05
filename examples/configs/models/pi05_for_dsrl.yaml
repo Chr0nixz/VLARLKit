@@ -1,4 +1,4 @@
-model_type: "openpi"
+backend: "openpi"
 
 # Model path - should be set in specific config files
 model_path: "/path/to/model/openpi"
