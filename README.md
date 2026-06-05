@@ -13,7 +13,7 @@ An elegant and researcher-friendly RL library for Vision-Language-Action (VLA) m
 ## ✨ Features
 
 - **Simple and clear implementation** — cleanly separated policy, rollout, runner, and model layers with minimal abstraction; easy to read, modify, and extend for research purposes
-- **Environment-decoupled architecture** — environments run as independent processes via ZMQ, eliminating dependency conflicts between different benchmark simulators
+- **Dependency-decoupled architecture** — model backends use separate uv projects, while benchmark environments run as independent ZMQ processes; this keeps base-model and simulator dependency conflicts out of the core library
 - **Async off-policy training** — supports asynchronous off-policy training, enabling non-blocking data collection alongside model updates
 
 ## 🧩 Supported Algorithms, Base Models, and Benchmarks (Work in Progress)
@@ -28,20 +28,36 @@ An elegant and researcher-friendly RL library for Vision-Language-Action (VLA) m
 
 ## 📦 Installation
 
-### 1. Main Library
+### 1. Core Library
 
 We use [uv](https://docs.astral.sh/uv/) to manage Python dependencies. See the [uv installation instructions](https://docs.astral.sh/uv/getting-started/installation/) to set it up. Once uv is installed, run the following to set up the environment:
 
 ```bash
 git clone https://github.com/VLARLKit/VLARLKit.git
 cd VLARLKit
-GIT_LFS_SKIP_SMUDGE=1 uv sync
+uv sync
 uv pip install -e .
-# Apply the transformers library patches for openpi
-cp -r .venv/lib/python3.11/site-packages/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/
 ```
 
-### 2. Benchmarks (choose one/more you need)
+The core package intentionally does not depend on any base-model repository.
+Install the model backend you need for each experiment.
+
+### 2. Model Backends (choose one you need)
+
+Each model backend runs from its own uv project with its own dependencies. This
+keeps base-model repositories separate from the core package while still
+training the model in the main `torchrun` process.
+
+Install and prepare the backend you need:
+
+```bash
+# OpenPI
+uv sync --project model_backends/openpi
+uv run --project model_backends/openpi \
+    bash model_backends/openpi/scripts/apply_transformers_patch.sh
+```
+
+### 3. Benchmarks (choose one/more you need)
 
 The environment client runs in a **separate** Python environment with its own dependencies. This avoids dependency conflicts between the simulator and the training stack.
 
