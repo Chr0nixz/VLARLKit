@@ -1,0 +1,107 @@
+defaults:
+  - envs/libero_spatial@env.train
+  - envs/libero_spatial@env.eval
+  - models/openvla_oft_for_rl@model
+  - _self_
+
+hydra:
+  run:
+    dir: outputs/${runner.logger.experiment_name}/${now:%Y-%m-%d_%H-%M}
+
+algorithm:
+  policy_class: grpo
+  reward_type: action_level
+  logprob_type: token_level
+  entropy_type: token_level
+  normalize_advantages: True
+  norm_loss_by_traj_len: True
+  kl_penalty: kl
+  group_size: 8
+  reward_coef: 5.0
+  bootstrap_type: none
+  rollout_epochs: 16
+  eval_rollout_epochs: 25
+
+  global_mini_batch_size: 16384
+  micro_batch_size: 16
+  adv_type: grpo
+  loss_type: actor
+  kl_beta: 0.0
+  entropy_bonus: 0
+  clip_ratio_high: 0.28
+  clip_ratio_low: 0.2
+  clip_ratio_c: 3.0
+
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  sampling_params:
+    do_sample: True
+    temperature_train: 1.6
+    temperature_eval: 1.6
+    top_k: -1
+    top_p: 1.0
+    repetition_penalty: 1.0
+
+  filter_rewards: True
+  rewards_lower_bound: 0.5
+  rewards_upper_bound: 4.5
+
+env:
+  env_client_host: "localhost"
+  env_client_base_port: 5550
+  train:
+    seed: ${runner.seed}
+    total_num_envs: 64
+    max_episode_steps: 512
+    reward_coef: ${algorithm.reward_coef}
+    group_size: ${algorithm.group_size}
+    use_fixed_reset_state_ids: True
+    reset_gripper_open: False
+  eval:
+    seed: ${runner.seed}
+    total_num_envs: 20
+    max_episode_steps: 512
+    group_size: 1
+    use_ordered_reset_state_ids: True
+    reset_gripper_open: False
+
+model:
+  model_path: "/network/scratch/s/sunyi/rlinf_sft_models/Openvla-oft-SFT-libero-spatial-traj1"
+  unnorm_key: "libero_spatial_no_noops"
+  max_prompt_length: 128
+  value_type: ${algorithm.reward_type}
+  add_value_head: False
+
+training:
+  optim:
+    lr: 2.0e-5
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_eps: 1.0e-08
+    weight_decay: 0.01
+    clip_grad: 1.0
+    lr_scheduler: "constant"
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "full_shard"
+    gradient_checkpointing: True
+    forward_prefetch: False
+    backward_prefetch: null
+    mixed_precision:
+      param_dtype: ${model.precision}
+      reduce_dtype: ${model.precision}
+      buffer_dtype: ${model.precision}
+
+runner:
+  seed: 0
+  max_epochs: 300
+  eval_interval: 10
+  save_interval: 10
+  save_video: False
+  resume_from: null
+  is_debug: False
+  logger:
+    project: "VLARLKit"
+    experiment_name: "libero_spatial_grpo_openvlaoft"
