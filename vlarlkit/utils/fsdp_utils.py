@@ -1,5 +1,4 @@
 import functools
-import logging
 from typing import Any
 
 import numpy as np
@@ -12,11 +11,26 @@ from torch.distributed.fsdp.wrap import (
     lambda_auto_wrap_policy,
     transformer_auto_wrap_policy,
 )
-from transformers.trainer_pt_utils import get_module_class_from_name
+try:
+    from transformers.trainer_pt_utils import get_module_class_from_name
+except ModuleNotFoundError:
+    try:
+        from transformers.pytorch_utils import get_module_class_from_name
+    except ModuleNotFoundError:
+
+        def get_module_class_from_name(module: torch.nn.Module, name: str):
+            if module.__class__.__name__ == name:
+                return module.__class__
+            for child in module.children():
+                result = get_module_class_from_name(child, name)
+                if result is not None:
+                    return result
+            return None
 
 from vlarlkit.models.base import BaseModel
+from vlarlkit.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def get_fsdp_wrap_policy(model: torch.nn.Module):
@@ -68,6 +82,20 @@ def get_fsdp_wrap_policy(model: torch.nn.Module):
             functools.partial(lambda_auto_wrap_policy, lambda_fn=_name_policy_fn)
         )
 
+    if getattr(model, "_is_lora", False):
+
+        def _lora_policy_fn(module: torch.nn.Module) -> bool:
+            return bool(
+                len(list(module.named_children())) == 0
+                and getattr(module, "weight", None) is not None
+                and module.weight.requires_grad
+                and getattr(module, "_to_lora", True) is True
+            )
+
+        policies.append(
+            functools.partial(lambda_auto_wrap_policy, lambda_fn=_lora_policy_fn)
+        )
+
     if not policies:
         return None
     if len(policies) == 1:
@@ -108,7 +136,14 @@ def _resolve_dtype(val) -> torch.dtype | None:
     s = str(val).strip().lower()
     if s in ("none", "null", ""):
         return None
-    mapping = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
+    mapping = {
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+    }
     if s not in mapping:
         raise ValueError(f"Unsupported dtype string: {val!r}")
     return mapping[s]

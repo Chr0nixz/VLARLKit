@@ -1,4 +1,3 @@
-import logging
 import os
 import tempfile
 
@@ -6,7 +5,9 @@ import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullStateDictConfig, FullyShardedDataParallel as FSDP, StateDictType
 
-logger = logging.getLogger("vlarlkit.checkpoint")
+from vlarlkit.utils.logging import get_logger
+
+logger = get_logger("vlarlkit.checkpoint")
 
 
 def _extract_fsdp_state_dict(fsdp_model: FSDP) -> dict:

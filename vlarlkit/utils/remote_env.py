@@ -2,14 +2,15 @@
 RemoteEnv — a drop-in proxy that forwards environment calls to an EnvServer via ZMQ.
 """
 
-import logging
 import pickle
 from typing import Any, Optional, Union
 
 import numpy as np
 import zmq
 
-logger = logging.getLogger("vlarlkit.remote_env")
+from vlarlkit.utils.logging import get_logger
+
+logger = get_logger("vlarlkit.remote_env")
 
 
 class RemoteEnv:

@@ -1,5 +1,4 @@
 import gc
-import logging
 import queue
 import threading
 import time
@@ -16,8 +15,9 @@ from vlarlkit.rollouts.rollout import Rollout
 from vlarlkit.utils.video_logging import build_eval_video_log
 from vlarlkit.utils.checkpoint import save_checkpoint
 from vlarlkit.utils.fsdp_utils import allreduce_mean, allreduce_mean_std, sync_fsdp_to_model
+from vlarlkit.utils.logging import get_logger
 
-logger = logging.getLogger("vlarlkit.runner")
+logger = get_logger("vlarlkit.runner")
 
 class OffPolicyRunner:
     """

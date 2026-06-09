@@ -2,15 +2,16 @@
 RemoteWM — a proxy that forwards world model calls to a WMServer via ZMQ.
 """
 
-import logging
 import pickle
 from typing import Any, Optional, Sequence
 
 import numpy as np
 import zmq
 
+from vlarlkit.utils.logging import get_logger
 
-_logger = logging.getLogger("vlarlkit.remote_wm")
+
+_logger = get_logger("vlarlkit.remote_wm")
 
 
 class RemoteWM:

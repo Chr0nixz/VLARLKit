@@ -1,5 +1,4 @@
 import gc
-import logging
 import time
 from typing import Any
 
@@ -12,9 +11,10 @@ from vlarlkit.data.io_struct import RolloutResult
 from vlarlkit.rollouts.rollout import Rollout
 from vlarlkit.utils.checkpoint import save_checkpoint
 from vlarlkit.utils.fsdp_utils import allreduce_mean, allreduce_mean_std, sync_fsdp_to_model
+from vlarlkit.utils.logging import get_logger
 from vlarlkit.utils.video_logging import build_eval_video_log
 
-logger = logging.getLogger("vlarlkit.runner")
+logger = get_logger("vlarlkit.runner")
 
 
 class OnPolicyRunner:
@@ -61,7 +61,10 @@ class OnPolicyRunner:
             else self.cfg.env.train.max_episode_steps
         )
         num_action_chunks = int(self.cfg.model.num_action_chunks)
-        episode_len = max_steps // num_action_chunks
+        reward_type = str(self.cfg.algorithm.get("reward_type", "chunk_level"))
+        episode_len = (
+            max_steps if reward_type == "action_level" else max_steps // num_action_chunks
+        )
         assert max_steps % num_action_chunks == 0, (
             f"max_episode_steps ({max_steps}) must be divisible by num_action_chunks ({num_action_chunks})"
         )
@@ -224,7 +227,7 @@ class OnPolicyRunner:
         adv_metrics: dict[str, Any],
         loss_mask: torch.Tensor,
     ) -> dict[str, float]:
-        mask = loss_mask.float()
+        mask = loss_mask.float().reshape(-1)
         mask_sum = mask.sum().clamp(min=1.0)
 
         def _masked_mean(value: Any) -> float:

@@ -1,4 +1,3 @@
-import logging
 from typing import Any
 
 import numpy as np
@@ -12,11 +11,12 @@ from vlarlkit.utils.fsdp_utils import (
     get_sharding_strategy,
     wrap_model_with_fsdp,
 )
+from vlarlkit.utils.logging import get_logger
 
 
 from vlarlkit.models.modules.value_head import aggregate_q
 
-logger = logging.getLogger("vlarlkit.policy")
+logger = get_logger("vlarlkit.policy")
 
 
 class RLTPolicy:
