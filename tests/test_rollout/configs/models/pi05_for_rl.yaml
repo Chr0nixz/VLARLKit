@@ -1,0 +1,42 @@
+backend: "openpi"
+
+# Model path - should be set in specific config files
+model_path: "/path/to/model/openpi"
+
+precision: null # for openpi, precision is null, please do not change this value
+
+# Action and chunk settings
+num_action_chunks: 10
+action_dim: 7
+
+# Training settings
+use_proprio: True
+num_steps: 5
+add_value_head: True
+
+# openpi specific parameters
+openpi:
+  model_class_name: "OpenPi0ForRL"
+  pi05: True
+  config_name: "pi05_libero"
+  num_images_in_input: 2
+  noise_level: 0.5
+  action_horizon: 10
+  action_chunk: ${model.num_action_chunks}
+  num_steps: ${model.num_steps}
+  train_expert_only: True
+  action_env_dim: ${model.action_dim}
+  noise_method: "flow_sde"
+  add_value_head: ${model.add_value_head}
+  value_head_hidden_sizes: [1024, 512, 256]
+  value_after_vlm: True
+  value_vlm_mode: "mean_token"
+  detach_critic_input: null
+  discrete_state_input: False
+
+data:
+  name: "libero"
+  repo_id: "physical-intelligence/libero"
+  prompt_from_task: True
+  assets_dir: "checkpoints/torch/pi0_libero/assets"
+  extra_delta_transform: False
