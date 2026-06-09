@@ -20,7 +20,6 @@ algorithm:
   rollout_epochs: 8
   eval_rollout_epochs: 25
 
-  update_epochs: 1
   global_mini_batch_size: 2048
   micro_batch_size: 128
   adv_type: grpo
