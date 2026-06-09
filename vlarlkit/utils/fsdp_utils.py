@@ -164,6 +164,27 @@ def mixed_precision_from_cfg(mp_cfg: dict | None) -> MixedPrecision | None:
     )
 
 
+def _enable_gradient_checkpointing(model: torch.nn.Module) -> None:
+    for target in (model, getattr(model, "base_model", None)):
+        enable_fn = getattr(target, "gradient_checkpointing_enable", None)
+        if callable(enable_fn):
+            enable_fn()
+            _disable_use_cache(model)
+            return
+
+    raise ValueError(
+        "fsdp_config.gradient_checkpointing=True, but the model does not expose "
+        "gradient_checkpointing_enable()."
+    )
+
+
+def _disable_use_cache(model: torch.nn.Module) -> None:
+    for module in model.modules():
+        config = getattr(module, "config", None)
+        if hasattr(config, "use_cache"):
+            config.use_cache = False
+
+
 @torch.no_grad()
 def clip_grad_norm_(
     model_or_params,
@@ -198,24 +219,30 @@ def clip_grad_norm_(
     # --- Sharded: compute global grad norm in float32, then clip ---
     norm_type = float(norm_type)
     params_with_grad = [p for p in params if p.grad is not None]
-    if not params_with_grad:
-        return 0.0
-
-    device = params_with_grad[0].device
+    device = (
+        params_with_grad[0].device
+        if params_with_grad
+        else params[0].device
+    )
 
     if norm_type == float("inf"):
-        local_norm = max(
-            p.grad.detach().float().abs().max().item() for p in params_with_grad
+        local_norm = (
+            max(p.grad.detach().float().abs().max().item() for p in params_with_grad)
+            if params_with_grad
+            else 0.0
         )
         total_norm_t = torch.tensor([local_norm], dtype=torch.float32, device=device)
         dist.all_reduce(total_norm_t, op=dist.ReduceOp.MAX)
     else:
         # Each rank holds a disjoint shard → sum of local p-norms^p = global p-norm^p
-        local_norms = torch.stack([
-            torch.linalg.vector_norm(p.grad.detach().float(), norm_type)
-            for p in params_with_grad
-        ])
-        local_sum = torch.linalg.vector_norm(local_norms, norm_type) ** norm_type
+        if params_with_grad:
+            local_norms = torch.stack([
+                torch.linalg.vector_norm(p.grad.detach().float(), norm_type)
+                for p in params_with_grad
+            ])
+            local_sum = torch.linalg.vector_norm(local_norms, norm_type) ** norm_type
+        else:
+            local_sum = torch.zeros((), dtype=torch.float32, device=device)
         total_norm_t = local_sum.unsqueeze(0)
         dist.all_reduce(total_norm_t, op=dist.ReduceOp.SUM)
         total_norm_t = total_norm_t ** (1.0 / norm_type)
@@ -236,6 +263,11 @@ def clip_grad_norm_(
 
 def wrap_model_with_fsdp(model: BaseModel, fsdp_cfg: dict, rank: int) -> FSDP:
     wrap_policy = get_fsdp_wrap_policy(model)
+
+    if fsdp_cfg.get("gradient_checkpointing", False):
+        if rank == 0:
+            logger.info("[FSDP] Enabling gradient checkpointing")
+        _enable_gradient_checkpointing(model)
 
     sharding_strategy = get_sharding_strategy(
         fsdp_cfg.get("sharding_strategy", "no_shard")
