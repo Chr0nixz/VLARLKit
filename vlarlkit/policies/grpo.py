@@ -265,7 +265,14 @@ class GRPOPolicy:
                     (loss / gradient_accumulation_steps).backward()
 
                 if should_sync:
-                    if accum_valid_count > 0:
+                    valid_count = torch.tensor(
+                        accum_valid_count,
+                        device=self._device,
+                    )
+                    if dist.is_initialized():
+                        dist.all_reduce(valid_count, op=dist.ReduceOp.SUM)
+
+                    if valid_count.item() > 0:
                         if self._clip_grad > 0:
                             clip_grad_norm_(self._model, self._clip_grad)
                         self._optimizer.step()
