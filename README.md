@@ -24,6 +24,7 @@ An elegant and researcher-friendly RL library for Vision-Language-Action (VLA) m
 |  | Off-policy RL | [DSRL](https://arxiv.org/pdf/2506.15799), [RLT](https://www.pi.website/download/rlt.pdf) |
 |  | Model-based RL | [VLA-MBPO](https://rhx11111.github.io/VLA-MBPO/) |
 | **Base Models** | Flow-based VLA | [π₀.₅](https://github.com/Physical-Intelligence/openpi) |
+|  | Autoregressive VLA | [OpenVLA-OFT](https://github.com/moojink/openvla-oft) |
 | **Benchmarks** | Simulation | [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO), [ManiSkill](https://github.com/haosulab/ManiSkill), [RoboTwin](https://github.com/RoboTwin-Platform/RoboTwin) |
 
 ## 📦 Installation
@@ -55,6 +56,11 @@ Install and prepare the backend you need:
 uv sync --project model_backends/openpi
 uv run --project model_backends/openpi \
     bash model_backends/openpi/scripts/apply_transformers_patch.sh
+
+# OpenVLA-OFT
+uv sync --project model_backends/openvla_oft
+uv run --project model_backends/openvla_oft \
+    bash model_backends/openvla_oft/scripts/install_flash_attn.sh
 ```
 
 ### 3. Benchmarks (choose one/more you need)
@@ -110,7 +116,7 @@ If you want to have a try with our MBRL method (VLA-MBPO), please follow [BAGEL-
 - [x] Add RoboTwin benchmark support
 - [x] Add GRPO algorithm support
 - [x] Add off-policy asynchronous training support
-- [ ] Add OpenVLA base model support
+- [x] Add OpenVLA-OFT base model support
 - [x] Add offline and model-based VLA methods support
 
 ## 🙏 Acknowledgements
