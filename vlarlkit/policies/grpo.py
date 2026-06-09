@@ -1,5 +1,4 @@
 import contextlib
-import logging
 from typing import Any
 
 import torch
@@ -9,8 +8,16 @@ from omegaconf import DictConfig
 from vlarlkit.models.base import BaseModel
 from vlarlkit.utils.conversion_utils import to_device
 from vlarlkit.utils.fsdp_utils import clip_grad_norm_, wrap_model_with_fsdp
+from vlarlkit.utils.logging import get_logger
+from vlarlkit.policies.loss_utils import (
+    align_to_shape,
+    expand_to_shape,
+    masked_mean,
+    reduce_entropy,
+    reduce_logprobs,
+)
 
-logger = logging.getLogger("vlarlkit.policy")
+logger = get_logger("vlarlkit.policy")
 
 
 class GRPOPolicy:
@@ -32,6 +39,9 @@ class GRPOPolicy:
         self._setup_lr_scheduler()
 
         self._clip_grad = float(self._optim_cfg.get("clip_grad", 0.0))
+        self._logprob_type = str(self._algo_cfg.get("logprob_type", "chunk_level"))
+        self._entropy_type = str(self._algo_cfg.get("entropy_type", "chunk_level"))
+        self._action_dim = int(cfg.model.action_dim)
         self._global_step = 0
 
     def _setup_optimizer(self) -> None:
@@ -113,19 +123,25 @@ class GRPOPolicy:
                 out[k] = v
         return out
 
+    def _sampling_kwargs(self) -> dict[str, Any]:
+        params = self._algo_cfg.get("sampling_params", {})
+        kwargs = {key: params[key] for key in params} if params else {}
+        temperature = kwargs.pop("temperature_train", None)
+        kwargs.pop("temperature_eval", None)
+        if temperature is not None:
+            kwargs["temperature"] = float(temperature)
+        return kwargs
+
     def run_update(self, batch: dict[str, Any]) -> dict[str, float]:
         self._model.train()
 
-        update_epochs = int(self._algo_cfg.get("update_epochs"))
+        update_epochs = int(self._algo_cfg.get("update_epochs", 1))
         world_size = dist.get_world_size() if dist.is_initialized() else 1
-        global_mini_bs = int(self._algo_cfg.get("global_mini_batch_size"))
+        global_mini_bs = self._algo_cfg.get("global_mini_batch_size")
         micro_batch_size = int(self._algo_cfg.get("micro_batch_size"))
-        denom = micro_batch_size * world_size
-        assert global_mini_bs % denom == 0, (
-            f"global_mini_batch_size ({global_mini_bs}) must be divisible by "
-            f"micro_batch_size * world_size ({denom})"
+        gradient_accumulation_steps = int(global_mini_bs) // (
+            micro_batch_size * world_size
         )
-        gradient_accumulation_steps = global_mini_bs // denom
         norm_loss_by_traj_len = self._algo_cfg.get("norm_loss_by_traj_len", False)
 
         clip_ratio_high = float(self._algo_cfg.get("clip_ratio_high", 0.2))
@@ -138,9 +154,6 @@ class GRPOPolicy:
         forward_inputs = batch["forward_inputs"]
         loss_mask = batch["loss_mask"]
         loss_mask_ratio = batch["loss_mask_ratio"]
-
-        if prev_logprobs.dim() > 1:
-            prev_logprobs = prev_logprobs.sum(dim=tuple(range(1, prev_logprobs.dim())))
 
         n_samples = advantages.shape[0]
 
@@ -166,20 +179,42 @@ class GRPOPolicy:
                 mb_forward_inputs = to_device(
                     self._slice_batch(forward_inputs, mb_inds), self._device
                 )
-                mb_mask = loss_mask[mb_inds].to(self._device)
-                mb_ratio = loss_mask_ratio[mb_inds].to(self._device)
-                mb_valid_count = mb_mask.sum().item()
-                accum_valid_count += mb_valid_count
+                mb_raw_mask = loss_mask[mb_inds].to(self._device)
+                mb_raw_ratio = loss_mask_ratio[mb_inds].to(self._device)
 
                 out = self._model(
                     forward_inputs=mb_forward_inputs,
+                    compute_logprobs=True,
+                    compute_entropy=True,
                     compute_values=False,
+                    **self._sampling_kwargs(),
                 )
-                logprobs = out["logprobs"]
-                entropy = out["entropy"]
-
-                if logprobs.dim() > 1:
-                    logprobs = logprobs.sum(dim=tuple(range(1, logprobs.dim())))
+                loss_inputs = reduce_logprobs(
+                    logprobs=out["logprobs"],
+                    old_logprobs=mb_prev_logprobs,
+                    advantages=mb_advantages,
+                    loss_mask=mb_raw_mask,
+                    loss_mask_ratio=mb_raw_ratio,
+                    logprob_type=self._logprob_type,
+                    action_dim=self._action_dim,
+                )
+                logprobs = loss_inputs["logprobs"]
+                mb_prev_logprobs = loss_inputs["old_logprobs"]
+                mb_advantages = loss_inputs["advantages"]
+                mb_policy_mask = loss_inputs["loss_mask"]
+                mb_policy_ratio = loss_inputs["loss_mask_ratio"]
+                ratio_mask = torch.broadcast_to(
+                    expand_to_shape(mb_policy_mask, logprobs.shape), logprobs.shape
+                )
+                mb_valid_count = ratio_mask.sum().item()
+                accum_valid_count += mb_valid_count
+                entropy = reduce_entropy(
+                    out.get("entropy"),
+                    entropy_type=self._entropy_type,
+                    action_dim=self._action_dim,
+                )
+                if entropy is None:
+                    entropy = torch.zeros_like(logprobs)
 
                 ratio = torch.exp(logprobs - mb_prev_logprobs)
                 policy_loss1 = -mb_advantages * ratio
@@ -200,19 +235,20 @@ class GRPOPolicy:
                 else:
                     dual_clip_mask = torch.zeros_like(clip_mask)
 
-                per_sample_entropy = entropy.reshape(-1)
-
-                if norm_loss_by_traj_len:
-                    policy_loss = (
-                        per_sample_policy_loss / mb_ratio * mb_mask
-                    ).mean()
-                    entropy_val = (per_sample_entropy / mb_ratio * mb_mask).mean()
-                else:
-                    mask_sum = mb_mask.sum().clamp(min=1)
-                    policy_loss = (
-                        per_sample_policy_loss * mb_mask
-                    ).sum() / mask_sum
-                    entropy_val = (per_sample_entropy * mb_mask).sum() / mask_sum
+                entropy_mask = align_to_shape(mb_raw_mask, entropy.shape, reduce="max")
+                entropy_ratio = align_to_shape(mb_raw_ratio, entropy.shape, reduce="mean")
+                policy_loss = masked_mean(
+                    per_sample_policy_loss,
+                    mb_policy_mask,
+                    mb_policy_ratio,
+                    norm_loss_by_traj_len=norm_loss_by_traj_len,
+                )
+                entropy_val = masked_mean(
+                    entropy,
+                    entropy_mask,
+                    entropy_ratio,
+                    norm_loss_by_traj_len=norm_loss_by_traj_len,
+                )
 
                 loss = policy_loss
                 if entropy_bonus != 0:
@@ -242,13 +278,13 @@ class GRPOPolicy:
                     total_entropy += entropy_val.detach().item()
 
                     total_ratio += (
-                        (ratio.detach() * mb_mask).sum().item() / mb_valid_count
+                        (ratio.detach() * ratio_mask).sum().item() / mb_valid_count
                     )
                     total_clip_fraction += (
-                        (clip_mask.float() * mb_mask).sum().item() / mb_valid_count
+                        (clip_mask.float() * ratio_mask).sum().item() / mb_valid_count
                     )
                     total_dual_clip_fraction += (
-                        (dual_clip_mask.float() * mb_mask).sum().item()
+                        (dual_clip_mask.float() * ratio_mask).sum().item()
                         / mb_valid_count
                     )
                     num_minibatches += 1

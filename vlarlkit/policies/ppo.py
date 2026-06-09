@@ -1,5 +1,4 @@
 import contextlib
-import logging
 import torch
 import torch.distributed as dist
 
@@ -9,8 +8,17 @@ from typing import Any
 from vlarlkit.models.base import BaseModel
 from vlarlkit.utils.conversion_utils import to_device
 from vlarlkit.utils.fsdp_utils import clip_grad_norm_, wrap_model_with_fsdp
+from vlarlkit.utils.logging import get_logger
+from vlarlkit.policies.loss_utils import (
+    align_to_shape,
+    expand_to_shape,
+    masked_count,
+    masked_mean,
+    reduce_entropy,
+    reduce_logprobs,
+)
 
-logger = logging.getLogger("vlarlkit.policy")
+logger = get_logger("vlarlkit.policy")
 
 
 class PPOPolicy:
@@ -33,6 +41,9 @@ class PPOPolicy:
 
         self._clip_grad = float(self._optim_cfg.get("clip_grad", 0.0))
         self._critic_warmup_steps = int(self._optim_cfg.get("critic_warmup_steps", 0))
+        self._logprob_type = str(self._algo_cfg.get("logprob_type", "chunk_level"))
+        self._entropy_type = str(self._algo_cfg.get("entropy_type", "chunk_level"))
+        self._action_dim = int(cfg.model.action_dim)
         self._global_step = 0
 
     def _setup_optimizer(self) -> None:
@@ -141,6 +152,15 @@ class PPOPolicy:
                 out[k] = v
         return out
 
+    def _sampling_kwargs(self) -> dict[str, Any]:
+        params = self._algo_cfg.get("sampling_params", {})
+        kwargs = {key: params[key] for key in params} if params else {}
+        temperature = kwargs.pop("temperature_train", None)
+        kwargs.pop("temperature_eval", None)
+        if temperature is not None:
+            kwargs["temperature"] = float(temperature)
+        return kwargs
+
     def run_update(self, batch: dict[str, Any]) -> dict[str, float]:
         self.model.train()
 
@@ -161,20 +181,13 @@ class PPOPolicy:
         entropy_bonus = float(self._algo_cfg.get("entropy_bonus", 0.0))
         critic_warmup = self._global_step < self._critic_warmup_steps
 
-        advantages = batch["advantages"] # (batch_size,)
-        prev_logprobs = batch["prev_logprobs"] # (batch_size, action_chunk, action_dim)
-        prev_values = batch["prev_values"] # (batch_size, 1)
-        returns = batch["returns"] # (batch_size,)
+        advantages = batch["advantages"]
+        prev_logprobs = batch["prev_logprobs"]
+        prev_values = batch["prev_values"]
+        returns = batch["returns"]
         forward_inputs = batch["forward_inputs"]
-        loss_mask = batch["loss_mask"] # (batch_size,)
-        loss_mask_ratio = batch["loss_mask_ratio"]  # (batch_size,)
-
-        if prev_logprobs.dim() > 1:
-            prev_logprobs = prev_logprobs.sum(
-                dim=tuple(range(1, prev_logprobs.dim())) # (batch_size,)
-            )
-        if prev_values.dim() > 1:
-            prev_values = prev_values.squeeze(-1) # (batch_size,)
+        loss_mask = batch["loss_mask"]
+        loss_mask_ratio = batch["loss_mask_ratio"]
 
         N = advantages.shape[0]
 
@@ -203,21 +216,49 @@ class PPOPolicy:
                 mb_forward_inputs = to_device(
                     self._slice_batch(forward_inputs, mb_inds), self.device
                 )
-                mb_mask = loss_mask[mb_inds].to(self.device)
-                mb_ratio = loss_mask_ratio[mb_inds].to(self.device)
+                mb_raw_mask = loss_mask[mb_inds].to(self.device)
+                mb_raw_ratio = loss_mask_ratio[mb_inds].to(self.device)
 
                 out = self.model(
                     forward_inputs=mb_forward_inputs,
+                    compute_logprobs=True,
+                    compute_entropy=True,
                     compute_values=True,
+                    **self._sampling_kwargs(),
                 )
-                logprobs = out["logprobs"] # (batch_size, action_chunk, action_dim)
-                values = out["values"] # (batch_size,)
-                entropy = out["entropy"] # (batch_size, 1)
-
-                if logprobs.dim() > 1:
-                    logprobs = logprobs.sum(dim=tuple(range(1, logprobs.dim()))) # (batch_size,)
-                if values.dim() > 1:
-                    values = values.squeeze(-1) # (batch_size,)
+                loss_inputs = reduce_logprobs(
+                    logprobs=out["logprobs"],
+                    old_logprobs=mb_prev_logprobs,
+                    advantages=mb_advantages,
+                    loss_mask=mb_raw_mask,
+                    loss_mask_ratio=mb_raw_ratio,
+                    logprob_type=self._logprob_type,
+                    action_dim=self._action_dim,
+                )
+                logprobs = loss_inputs["logprobs"]
+                mb_prev_logprobs = loss_inputs["old_logprobs"]
+                mb_advantages = loss_inputs["advantages"]
+                mb_policy_mask = loss_inputs["loss_mask"]
+                mb_policy_ratio = loss_inputs["loss_mask_ratio"]
+                values = align_to_shape(out["values"], mb_returns.shape)
+                mb_prev_values = align_to_shape(mb_prev_values, mb_returns.shape)
+                mb_value_mask = align_to_shape(
+                    mb_raw_mask,
+                    mb_returns.shape,
+                    reduce="max",
+                )
+                mb_value_ratio = align_to_shape(
+                    mb_raw_ratio,
+                    mb_returns.shape,
+                    reduce="mean",
+                )
+                entropy = reduce_entropy(
+                    out.get("entropy"),
+                    entropy_type=self._entropy_type,
+                    action_dim=self._action_dim,
+                )
+                if entropy is None:
+                    entropy = torch.zeros_like(logprobs)
 
                 ratio = torch.exp(logprobs - mb_prev_logprobs)
                 policy_loss1 = -mb_advantages * ratio
@@ -257,20 +298,32 @@ class PPOPolicy:
                     per_sample_value_loss = _value_loss(values - mb_returns)
                     value_clip_mask = torch.zeros_like(values, dtype=torch.bool)
 
-                per_sample_entropy = entropy.reshape(-1)
-
-                if norm_loss_by_traj_len:
-                    # masked_mean_ratio: up-weight short (successful) episodes
-                    policy_loss = (per_sample_policy_loss / mb_ratio * mb_mask).mean()
-                    value_loss = (per_sample_value_loss / mb_ratio * mb_mask).mean()
-                    entropy_val = (per_sample_entropy / mb_ratio * mb_mask).mean()
-                    value_mean = (values.detach() / mb_ratio * mb_mask).mean()
-                else:
-                    mask_sum = mb_mask.sum().clamp(min=1)
-                    policy_loss = (per_sample_policy_loss * mb_mask).sum() / mask_sum
-                    value_loss = (per_sample_value_loss * mb_mask).sum() / mask_sum
-                    entropy_val = (per_sample_entropy * mb_mask).sum() / mask_sum
-                    value_mean = (values.detach() * mb_mask).sum() / mask_sum
+                entropy_mask = align_to_shape(mb_raw_mask, entropy.shape, reduce="max")
+                entropy_ratio = align_to_shape(mb_raw_ratio, entropy.shape, reduce="mean")
+                policy_loss = masked_mean(
+                    per_sample_policy_loss,
+                    mb_policy_mask,
+                    mb_policy_ratio,
+                    norm_loss_by_traj_len=norm_loss_by_traj_len,
+                )
+                value_loss = masked_mean(
+                    per_sample_value_loss,
+                    mb_value_mask,
+                    mb_value_ratio,
+                    norm_loss_by_traj_len=norm_loss_by_traj_len,
+                )
+                entropy_val = masked_mean(
+                    entropy,
+                    entropy_mask,
+                    entropy_ratio,
+                    norm_loss_by_traj_len=norm_loss_by_traj_len,
+                )
+                value_mean = masked_mean(
+                    values.detach(),
+                    mb_value_mask,
+                    mb_value_ratio,
+                    norm_loss_by_traj_len=norm_loss_by_traj_len,
+                )
 
                 if critic_warmup:
                     loss = value_loss
@@ -296,15 +349,22 @@ class PPOPolicy:
                 total_value_loss += value_loss.detach().item()
                 total_entropy += entropy_val.detach().item()
                 total_value_mean += value_mean.item()
-                if mb_mask is not None:
-                    mask_count = mb_mask.sum().clamp(min=1)
-                    total_ratio += (ratio.detach() * mb_mask).sum().item() / mask_count.item()
-                    total_clip_fraction += (clip_mask.float() * mb_mask).sum().item() / mask_count.item()
-                    total_value_clip_fraction += (value_clip_mask.float() * mb_mask).sum().item() / mask_count.item()
-                else:
-                    total_ratio += ratio.detach().mean().item()
-                    total_clip_fraction += clip_mask.float().mean().item()
-                    total_value_clip_fraction += value_clip_mask.float().mean().item()
+                ratio_count = masked_count(mb_policy_mask, ratio.shape)
+                value_count = masked_count(mb_value_mask, value_clip_mask.shape)
+                ratio_mask = torch.broadcast_to(
+                    expand_to_shape(mb_policy_mask, ratio.shape), ratio.shape
+                )
+                value_mask = torch.broadcast_to(
+                    expand_to_shape(mb_value_mask, value_clip_mask.shape),
+                    value_clip_mask.shape,
+                )
+                total_ratio += (ratio.detach() * ratio_mask).sum().item() / ratio_count.item()
+                total_clip_fraction += (
+                    clip_mask.float() * ratio_mask
+                ).sum().item() / ratio_count.item()
+                total_value_clip_fraction += (
+                    value_clip_mask.float() * value_mask
+                ).sum().item() / value_count.item()
                 num_minibatches += 1
 
         if critic_warmup and self.rank == 0:
