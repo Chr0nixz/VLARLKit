@@ -1,8 +1,9 @@
-import numpy as np
-import torch
-
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+import numpy as np
+import torch
+from einops import rearrange
 
 from vlarlkit.utils.conversion_utils import to_numpy
 
@@ -93,52 +94,72 @@ class RolloutResult:
             gae_lambda: GAE lambda parameter controlling the bias-variance trade-off.
         """
         self._loss_filter_mask = None
-        num_steps = len(self.rewards)
-        rewards = np.stack(self.rewards).astype(np.float32)         # (T, n_envs)
-        values = np.stack(self.prev_values).astype(np.float32)      # (T, n_envs, 1)
-        values = values.squeeze(-1)                                 # (T, n_envs)
-        terminations = np.stack(self.terminations)                  # (T, n_envs)
-        truncations = np.stack(self.truncations)                    # (T, n_envs)
+        # chunk-level: rewards/values are [T, B].
+        # action-level: rewards/values are [T, B, C], one scalar per action step.
+        rewards = np.stack(self.rewards).astype(np.float32)
+        values = np.stack(self.prev_values).astype(np.float32)
+        if values.ndim > rewards.ndim and values.shape[-1] == 1:
+            values = values.squeeze(-1)
+        # Same shape as rewards: [T, B] for chunk-level or [T, B, C] for action-level.
+        terminations = np.stack(self.terminations)
+        truncations = np.stack(self.truncations)
 
-        dones = np.logical_or(terminations, truncations)
+        original_shape = rewards.shape
+        if rewards.ndim == 3:
+            num_steps, num_envs, chunk_size = rewards.shape
+            rewards_for_gae = rearrange(rewards, "t b c -> (t c) b")
+            values_for_gae = rearrange(values, "t b c -> (t c) b")
+            terminations_for_gae = rearrange(terminations, "t b c -> (t c) b")
+            truncations_for_gae = rearrange(truncations, "t b c -> (t c) b")
+        elif rewards.ndim == 2:
+            rewards_for_gae = rewards
+            values_for_gae = values
+            terminations_for_gae = terminations
+            truncations_for_gae = truncations
+        else:
+            raise ValueError(f"Unsupported rewards shape for GAE: {rewards.shape}")
 
-        advantages = np.zeros_like(rewards)
-        last_gae_lam = np.zeros_like(rewards[0])
+        num_primitive_steps = rewards_for_gae.shape[0]
+        dones = np.logical_or(terminations_for_gae, truncations_for_gae)
 
-        for t in reversed(range(num_steps)):
-            next_values = np.zeros_like(values[0]) if t == num_steps - 1 else values[t + 1]
+        advantages = np.zeros_like(rewards_for_gae)
+        last_gae_lam = np.zeros_like(rewards_for_gae[0])
+
+        for t in reversed(range(num_primitive_steps)):
+            next_values = (
+                np.zeros_like(values_for_gae[0])
+                if t == num_primitive_steps - 1
+                else values_for_gae[t + 1]
+            )
             not_done = (~dones[t]).astype(np.float32)
 
-            delta = rewards[t] + gamma * next_values * not_done - values[t]
+            delta = rewards_for_gae[t] + gamma * next_values * not_done - values_for_gae[t]
             last_gae_lam = delta + gamma * gae_lambda * not_done * last_gae_lam
             advantages[t] = last_gae_lam
 
-        self.returns = advantages + values
-        self.advantages = advantages
+        returns = advantages + values_for_gae
+        if len(original_shape) == 3:
+            self.advantages = rearrange(
+                advantages,
+                "(t c) b -> t b c",
+                t=num_steps,
+                b=num_envs,
+                c=chunk_size,
+            )
+            self.returns = rearrange(
+                returns,
+                "(t c) b -> t b c",
+                t=num_steps,
+                b=num_envs,
+                c=chunk_size,
+            )
+        else:
+            self.advantages = advantages
+            self.returns = returns
         return {
             "advantages": self.advantages,
             "returns": self.returns,
         }
-
-    def _compute_episode_loss_mask(
-        self, episode_len: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        terminations = np.stack(self.terminations).astype(np.float32)  # (T, n_envs)
-        T, n_envs = terminations.shape
-        assert T % episode_len == 0, (
-            f"T ({T}) must be divisible by episode_len ({episode_len})"
-        )
-        num_episodes = T // episode_len
-        term = terminations.reshape(num_episodes, episode_len, n_envs)
-        cum = np.cumsum(term, axis=1)
-        shifted = np.zeros_like(cum)
-        shifted[:, 1:] = cum[:, :-1]
-        mask = (shifted == 0)  # (num_episodes, episode_len, n_envs)
-
-        valid_counts = mask.sum(axis=1, keepdims=True)
-        ratio = (valid_counts / episode_len).astype(np.float32)
-        ratio = np.broadcast_to(ratio, mask.shape).copy()
-        return mask, ratio
 
     def compute_grpo_advantages(
         self,
@@ -149,21 +170,41 @@ class RolloutResult:
         rewards_upper_bound: float = 1.0,
     ) -> dict[str, Any]:
         """Compute group-relative advantages from per-episode scores."""
-        rewards = np.stack(self.rewards).astype(np.float32)  # (T, n_envs)
-        T, n_envs = rewards.shape
+        rewards = np.stack(self.rewards).astype(np.float32)  # (T, B[, C])
+        original_shape = rewards.shape
+        if rewards.ndim == 3:
+            T, n_envs, chunk_size = rewards.shape
+            rewards_for_scores = rearrange(rewards, "t b c -> (t c) b")
+        elif rewards.ndim == 2:
+            T, n_envs = rewards.shape
+            chunk_size = None
+            rewards_for_scores = rewards
+        else:
+            raise ValueError(f"Unsupported rewards shape for GRPO: {rewards.shape}")
+
         assert group_size > 0, f"group_size must be positive, got {group_size}"
-        assert T % episode_len == 0, (
-            f"T ({T}) must be divisible by episode_len ({episode_len})"
+        primitive_T = rewards_for_scores.shape[0]
+        assert primitive_T % episode_len == 0, (
+            f"T ({primitive_T}) must be divisible by episode_len ({episode_len})"
         )
         assert n_envs % group_size == 0, (
             f"n_envs ({n_envs}) must be divisible by group_size ({group_size})"
         )
 
-        num_episodes = T // episode_len
+        num_episodes = primitive_T // episode_len
         num_groups = n_envs // group_size
         loss_mask, _ = self._compute_episode_loss_mask(episode_len)
-        rewards = rewards.reshape(num_episodes, episode_len, n_envs)
-        scores = (rewards * loss_mask.astype(np.float32)).sum(axis=1)
+        loss_mask_for_scores = (
+            rearrange(loss_mask, "t b c -> (t c) b")
+            if loss_mask.ndim == 3
+            else loss_mask
+        )
+        raw_loss_mask_fraction = float(loss_mask_for_scores.mean())
+        rewards_for_scores = rewards_for_scores.reshape(num_episodes, episode_len, n_envs)
+        loss_mask_for_scores = loss_mask_for_scores.reshape(
+            num_episodes, episode_len, n_envs
+        )
+        scores = (rewards_for_scores * loss_mask_for_scores.astype(np.float32)).sum(axis=1)
 
         grouped_scores = scores.reshape(num_episodes, num_groups, group_size)
         group_mean = grouped_scores.mean(axis=-1, keepdims=True)
@@ -175,12 +216,13 @@ class RolloutResult:
 
         step_advantages = grouped_advantages.reshape(num_episodes, n_envs)
         step_advantages = np.broadcast_to(
-            step_advantages[:, None, :], rewards.shape
+            step_advantages[:, None, :], rewards_for_scores.shape
         ).copy()
-        step_advantages *= loss_mask.astype(np.float32)
+        step_advantages *= loss_mask_for_scores.astype(np.float32)
 
         self._loss_filter_mask = None
         groups_kept = np.ones((num_episodes, num_groups), dtype=bool)
+        filter_mask_fraction = 1.0
         if filter_rewards:
             group_mean = group_mean.squeeze(-1)
             groups_kept = (
@@ -188,12 +230,32 @@ class RolloutResult:
                 & (group_mean <= rewards_upper_bound)
             )
             envs_kept = np.repeat(groups_kept, group_size, axis=1)
-            self._loss_filter_mask = np.broadcast_to(
-                envs_kept[:, None, :], loss_mask.shape
+            loss_filter_mask = np.broadcast_to(
+                envs_kept[:, None, :], loss_mask_for_scores.shape
             ).copy()
+            if len(original_shape) == 3:
+                self._loss_filter_mask = rearrange(
+                    loss_filter_mask.reshape(primitive_T, n_envs),
+                    "(t c) b -> t b c",
+                    t=T,
+                    b=n_envs,
+                    c=chunk_size,
+                )
+            else:
+                self._loss_filter_mask = loss_filter_mask.reshape(T, n_envs)
+            filter_mask_fraction = float(loss_filter_mask.mean())
 
         self.returns = None
-        self.advantages = step_advantages.reshape(T, n_envs)
+        if len(original_shape) == 3:
+            self.advantages = rearrange(
+                step_advantages.reshape(primitive_T, n_envs),
+                "(t c) b -> t b c",
+                t=T,
+                b=n_envs,
+                c=chunk_size,
+            )
+        else:
+            self.advantages = step_advantages.reshape(T, n_envs)
 
         sample_keep_fraction = float(groups_kept.mean()) if groups_kept.size else 1.0
         return {
@@ -203,22 +265,72 @@ class RolloutResult:
             "grpo_group_keep_fraction": sample_keep_fraction,
         }
 
+    def _compute_episode_loss_mask(
+        self, episode_len: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        terminations = np.stack(self.terminations).astype(np.float32)  # (T, B[, C])
+        original_shape = terminations.shape
+        if terminations.ndim == 3:
+            T, n_envs, chunk_size = terminations.shape
+            terminations = rearrange(terminations, "t b c -> (t c) b")
+        elif terminations.ndim == 2:
+            T, n_envs = terminations.shape
+            chunk_size = None
+        else:
+            raise ValueError(f"Unsupported terminations shape: {terminations.shape}")
+
+        primitive_T = terminations.shape[0]
+        assert primitive_T % episode_len == 0, (
+            f"T ({primitive_T}) must be divisible by episode_len ({episode_len})"
+        )
+        num_episodes = primitive_T // episode_len
+        term = terminations.reshape(num_episodes, episode_len, n_envs)
+        cum = np.cumsum(term, axis=1)
+        shifted = np.zeros_like(cum)
+        shifted[:, 1:] = cum[:, :-1]
+        mask = (shifted == 0)  # (num_episodes, episode_len, n_envs)
+
+        valid_counts = mask.sum(axis=1, keepdims=True)
+        ratio = (valid_counts / episode_len).astype(np.float32)
+        ratio = np.broadcast_to(ratio, mask.shape).copy()
+        if len(original_shape) == 3:
+            mask = rearrange(
+                mask.reshape(primitive_T, n_envs),
+                "(t c) b -> t b c",
+                t=T,
+                b=n_envs,
+                c=chunk_size,
+            )
+            ratio = rearrange(
+                ratio.reshape(primitive_T, n_envs),
+                "(t c) b -> t b c",
+                t=T,
+                b=n_envs,
+                c=chunk_size,
+            )
+        else:
+            mask = mask.reshape(primitive_T, n_envs)
+            ratio = ratio.reshape(primitive_T, n_envs)
+        return mask, ratio
+
     def compute_loss_mask(
         self, episode_len: int
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute a boolean mask and per-sample loss_mask_ratio.
+        """Compute a boolean loss mask and per-step loss_mask_ratio.
 
         Returns:
-            mask: (T*n_envs,) bool — True before the first termination per env.
-            loss_mask_ratio: (T*n_envs,) float32 — valid_steps / episode_len
-                per (episode, env), broadcast to every step. Used to up-weight
-                short (successful) episodes in the loss.
+            mask: [T*B] for chunk-level or [T*B, C] for action-level. True
+                before the first termination per env.
+            loss_mask_ratio: same shape as mask. Stores valid_steps / episode_len
+                per (episode, env), broadcast to every supervised step.
         """
         mask, ratio = self._compute_episode_loss_mask(episode_len)
         if self._loss_filter_mask is not None:
             mask = mask & self._loss_filter_mask
 
-        return mask.reshape(-1).astype(bool), ratio.reshape(-1).copy()
+        mask = rearrange(mask, "t b ... -> (t b) ...").astype(bool)
+        ratio = rearrange(ratio, "t b ... -> (t b) ...").copy()
+        return mask, ratio
 
     def norm_adv(self, mean: float, std: float) -> None:
         """Normalize advantages in-place with the given global mean and std."""
@@ -231,11 +343,12 @@ class RolloutResult:
     ) -> dict[str, torch.Tensor]:
         """Stack and flatten rollout data into a single batch dict.
 
-        Flattens (T, n_envs, ...) into (N, ...) where N = T * n_envs.
+        Flattens [T, B, ...] into [T*B, ...]. Action-level per-chunk axes
+        remain in the trailing dimensions, e.g. [T, B, C] -> [T*B, C].
         Obs/next_obs nested dicts are flattened to "obs/key", "next_obs/key".
 
         Returns:
-            A dict with flat keys and flattened torch tensors, each (N, ...).
+            A dict with flat keys and flattened torch tensors.
         """
         def _stack_and_flatten(name: str, arrays: list[np.ndarray]) -> torch.Tensor:
             try:
@@ -248,7 +361,7 @@ class RolloutResult:
                     f"{unique_shapes}"
                 ) from exc
             t = torch.from_numpy(stacked)
-            return t.reshape(t.shape[0] * t.shape[1], *t.shape[2:])  # (N, ...)
+            return rearrange(t, "t b ... -> (t b) ...")
 
         batch: dict[str, Any] = {}
 
@@ -295,8 +408,12 @@ class RolloutResult:
             batch["loss_mask_ratio"] = torch.from_numpy(ratio)
 
         if self.returns is not None:
-            batch["returns"] = torch.from_numpy(self.returns.reshape(-1))
+            batch["returns"] = torch.from_numpy(
+                rearrange(self.returns, "t b ... -> (t b) ...")
+            )
         if self.advantages is not None:
-            batch["advantages"] = torch.from_numpy(self.advantages.reshape(-1))
+            batch["advantages"] = torch.from_numpy(
+                rearrange(self.advantages, "t b ... -> (t b) ...")
+            )
 
         return batch
