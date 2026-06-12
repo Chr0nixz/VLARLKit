@@ -112,12 +112,12 @@ If you want to have a try with our MBRL method (VLA-MBPO), please follow [BAGEL-
 
 ## 📋 TODO
 
-- Add ManiSkill benchmark support
-- Add RoboTwin benchmark support
-- Add GRPO algorithm support
-- Add off-policy asynchronous training support
-- Add OpenVLA-OFT base model support
-- Add offline and model-based VLA methods support
+- [x] Add ManiSkill benchmark support
+- [x] Add RoboTwin benchmark support
+- [x] Add GRPO algorithm support
+- [x] Add off-policy asynchronous training support
+- [x] Add OpenVLA-OFT base model support
+- [x] Add offline and model-based VLA methods support
 
 ## 🙏 Acknowledgements
 
