@@ -1,10 +1,14 @@
-
+<p align="center">
+  <img src="assets/logo.svg" alt="VLARLKit Logo" width="400"/>
+</p>
 
 # VLARLKit: An elegant PyTorch VLA-RL library
 
 An elegant and researcher-friendly RL library for Vision-Language-Action (VLA) models.
 
-
+<p align="center">
+  <img src="assets/framework.svg" alt="VLARLKit Framework" width="700"/>
+</p>
 
 ## ✨ Features
 
